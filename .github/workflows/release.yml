@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: read
+
 # Notarization is done locally with scripts/release.sh.
 # This workflow only verifies the build compiles on a clean machine.
 jobs:

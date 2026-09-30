@@ -75,32 +75,39 @@ function stepLabel(tool: string, input: Record<string, unknown>): string {
   return label;
 }
 
-/**
- * What the Allow button actually authorises. Approving "Write" tells you nothing
- * — approving `Write · C:\…\.env` tells you everything, and the difference is
- * the whole point of approving from the island rather than blind.
- *
- * Ordered by how specific the field is, so an unfamiliar tool still shows
- * whatever identifying string it carries instead of falling back to its name.
- */
-const APPROVAL_FIELDS = [
-  "command", // Bash, PowerShell
-  "file_path", // Write, Edit, MultiEdit, NotebookEdit
-  "path", // Read, LS
-  "url", // WebFetch
-  "query", // WebSearch
-  "pattern", // Glob, Grep
-  "prompt", // Task
-] as const;
-
-function approvalTarget(tool: string, input: Record<string, unknown>): string {
-  for (const field of APPROVAL_FIELDS) {
-    const value = input[field];
-    if (typeof value === "string" && value.trim()) {
-      return `${tool} · ${value.trim()}`;
-    }
+/** The relay validates too; defend the UI if an older relay is still installed. */
+function reviewablePermission(payload: HookPayload): boolean {
+  const tool = (payload.tool_name ?? "").replace(/^functions\./, "");
+  const input = payload.tool_input;
+  if (!input || typeof input !== "object" || Array.isArray(input)) return false;
+  let field: "command" | "cmd";
+  let array = false;
+  switch (tool) {
+    case "Bash": case "PowerShell": case "shell_command": field = "command"; break;
+    case "exec_command": field = "cmd"; break;
+    case "shell": field = "command"; array = true; break;
+    default: return false;
   }
-  return tool;
+  if (Object.hasOwn(input, field === "command" ? "cmd" : "command")) return false;
+  const command = input[field];
+  if (array) {
+    if (!Array.isArray(command) || !command.length || !command.every((v) => typeof v === "string" && v.length > 0)) return false;
+  } else if (typeof command !== "string" || !command.trim()) return false;
+  const bytes = (s: string) => new TextEncoder().encode(s).length;
+  const complete = (v: unknown): boolean => {
+    if (typeof v === "string") return bytes(v) < 2000 && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u00ad\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/u.test(v);
+    if (Array.isArray(v)) return v.every(complete);
+    if (v && typeof v === "object") return Object.entries(v).every(([k, value]) => complete(k) && complete(value));
+    if (typeof v === "number") return Number.isFinite(v) && Math.abs(v) <= Number.MAX_SAFE_INTEGER;
+    return true;
+  };
+  return bytes(JSON.stringify(command)) < 2000 && bytes(JSON.stringify(input)) <= 8192 && complete(payload);
+}
+
+function approvalTarget(payload: HookPayload): string {
+  // Every argument and working directory is displayed verbatim, with JSON
+  // escaping for control characters; never authorise a summary of the request.
+  return JSON.stringify({ tool: payload.tool_name, cwd: payload.cwd ?? "", tool_input: payload.tool_input }, null, 2);
 }
 
 function upsert(projectName: string, cwd: string) {
@@ -241,6 +248,10 @@ function handleHook(island: Island, payload: HookPayload) {
 
     case "PermissionRequest": {
       const requestId = payload.request_id ?? "";
+      if (!requestId || !reviewablePermission(payload)) {
+        if (requestId) void Bridge.approvalDecline(requestId);
+        break;
+      }
       // One card, one request. A second one must never quietly replace the first
       // — that would leave a human staring at request B while request A waits for
       // a decision nobody can give. Hand it straight back to the terminal.
@@ -251,12 +262,11 @@ function handleHook(island: Island, payload: HookPayload) {
       upsert(projectName, cwd);
       if (pendingTimeout != null) window.clearTimeout(pendingTimeout);
       const tool = payload.tool_name ?? "Tool";
-      const input = payload.tool_input ?? {};
       State.pendingApproval = {
         requestId,
         sessionId: payload.session_id ?? "",
         tool,
-        command: approvalTarget(tool, input),
+        command: approvalTarget(payload),
       };
       // The relay's short ack window closes in 800 ms; everything below this
       // line is synchronous, so the card really is up by the time it lands.

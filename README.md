@@ -4,7 +4,7 @@ This personal source fork adapts [Louis-CFM/coucou](https://github.com/Louis-CFM
 
 ## Capabilities
 
-- Codex lifecycle hooks use `$CODEX_HOME/hooks.json` (default `~/.codex/hooks.json`), a separate local pipe and explicit Allow/Deny buttons. After installation, review and trust the commands with `/hooks` in the official CLI. The island shows the latest session in an aggregated card, not a separate card per concurrent chat.
+- Codex lifecycle hooks use `$CODEX_HOME/hooks.json` (default `~/.codex/hooks.json`), a separate local pipe and explicit Allow/Deny buttons for recognised, fully displayed shell requests. Unknown, oversized or ambiguous requests stay in the official terminal. After installation, review and trust the commands with `/hooks` in the official CLI. The island shows the latest session in an aggregated card, not a separate card per concurrent chat.
 - API chat uses the official Responses endpoint, `store: false` and a separate Credential Manager service. API billing is independent of ChatGPT subscriptions. Default model is `gpt-5.6-sol`, subject to project access.
 - ChatGPT session chat uses the official local `codex app-server` over stdin/stdout. This app never reads `auth.json`, copies OAuth tokens or accepts your ChatGPT password. **It rejects CLIs whose generated schema cannot restrict file reads. The official npm CLI 0.159.2 inspected during development lacks that capability and is blocked.** No successful authenticated inference is claimed. Choose API mode for chat with that runtime; observing hooks needs no API key.
 - ChatGPT mode supports UTF-8 attachments up to 200 KB. API mode also supports images/PDFs up to 20 MB. Attachments are copied to the inbox and sent to OpenAI when submitted. Do not attach secrets.
@@ -19,10 +19,10 @@ cd coucouForCodex/windows
 npm ci
 npm run build
 cargo test --workspace --locked
-cargo build -p coucou --locked
+cargo build --release -p coucou --features tauri/custom-protocol --locked
 ```
 
-The application is `windows/target/debug/coucou.exe`. `npm run tauri dev` runs the native development app. CI checks builds/tests and does not publish installers or binary artifacts. Do not download the Claude app from the upstream releases expecting this adaptation.
+The standalone application is `windows/target/release/coucou.exe`; keep `coucou-hook.exe` beside it. `npm run tauri dev` runs the native development app. CI checks builds/tests and does not publish installers or binary artifacts. Do not download the Claude app from the upstream releases expecting this adaptation.
 
 ## Setup and security
 

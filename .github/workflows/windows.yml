@@ -27,5 +27,5 @@ jobs:
       - name: Run protocol and security tests
         run: cargo test --workspace --locked
       - name: Build native application
-        run: cargo build -p coucou --locked
+        run: cargo build --release -p coucou --features tauri/custom-protocol --locked
       # Personal source fork: no installer uploads or release publication.

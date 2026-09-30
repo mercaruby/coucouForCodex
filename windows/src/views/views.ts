@@ -290,7 +290,7 @@ function buildEmpty(actions: ViewActions): ViewHost {
 
 function buildApproval(actions: ViewActions): ViewHost {
   const who = h("div");
-  const code = h("div", { class: "code" });
+  const code = h("div", { class: "code", style: "white-space:pre-wrap;overflow:auto;text-overflow:clip;overflow-wrap:anywhere;min-height:0;max-height:76px;flex:1 1 auto" });
   const row = h("div", { class: "actions" });
   const el = h("div", { class: "view" }, card("amber", stack(116, 16, who, code, row)));
   let rowKey = "";
@@ -299,10 +299,9 @@ function buildApproval(actions: ViewActions): ViewHost {
     sync() {
       clear(who);
       who.append(agentWho(State.focusTask, "needs permission"));
-      // The whole point of approving here rather than in the terminal: this line
-      // is the command, the file path or the URL being authorised, not just the
-      // name of the tool asking.
-      code.textContent = State.pendingApproval?.command || State.pendingApproval?.tool || "…";
+      // Full tool arguments and cwd, scrollable without ellipsis. The hook
+      // handler defers unknown or oversized requests to the official CLI.
+      code.textContent = State.pendingApproval?.command || "…";
       // Two buttons, built once. Rebuilding them between a mouse-down and a
       // mouse-up would swallow the click, and there is nothing left to vary:
       // "Always" is gone until the remembered-rules list exists to back it.

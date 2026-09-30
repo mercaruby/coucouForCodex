@@ -573,11 +573,7 @@ mod tests {
     fn empty_and_whitespace_files_start_from_nothing() {
         assert_eq!(parse_settings(b"", WHERE).unwrap(), json!({}));
         assert_eq!(
-            parse_settings(
-                b"  
-	 ", WHERE
-            )
-            .unwrap(),
+            parse_settings(b"  \n\t ", WHERE).unwrap(),
             json!({})
         );
     }
