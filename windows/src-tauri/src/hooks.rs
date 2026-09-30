@@ -1,14 +1,15 @@
-// Claude Code hook installation.
+// Codex hook installation.
 //
 // The rule from CLAUDE.md is strict and is followed to the letter:
-// read %USERPROFILE%\.claude\settings.json, take a dated backup, merge without
+// read %USERPROFILE%\.codex\hooks.json, take a dated backup, merge without
 // touching anybody else's hooks, show the diff, and write only after an explicit
 // click. Uninstall removes Coucou's entries and nothing else.
 //
 // The command is only the quoted exe path in forward slashes plus the event name:
-// on Windows Claude Code runs hook commands through Git Bash, and anything with
+// on Windows Codex runs hook commands through Git Bash, and anything with
 // PowerShell or cmd in it breaks.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
@@ -18,25 +19,21 @@ use windows::Win32::System::SystemInformation::GetLocalTime;
 
 use crate::settings;
 
-/// Every event the island reacts to, with the hook timeout written to settings.json.
+/// Supported Codex events, with the timeout written to hooks.json.
 /// PermissionRequest waits for a human, so it gets the decision timeout + 10 s.
 pub const HOOK_EVENTS: &[(&str, u64)] = &[
     ("SessionStart", 10),
-    ("SessionEnd", 10),
+    ("SessionEnd", 3),
     ("UserPromptSubmit", 10),
     ("PreToolUse", 10),
     ("PostToolUse", 10),
-    ("PostToolUseFailure", 10),
     ("PermissionRequest", 120),
-    ("Notification", 10),
     ("Stop", 10),
-    ("StopFailure", 10),
     ("SubagentStart", 10),
     ("SubagentStop", 10),
 ];
 
-/// Marker that identifies a Coucou entry inside settings.json.
-const MARKER: &str = "coucou-hook";
+const MARKER: &str = "coucou-hook.exe";
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -65,20 +62,30 @@ fn home() -> PathBuf {
 }
 
 pub fn settings_path() -> PathBuf {
-    home().join(".claude").join("settings.json")
+    std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home().join(".codex"))
+        .join("hooks.json")
 }
 
-/// Reads `~/.claude/settings.json`.
+/// Reads `~/.codex/hooks.json`.
 ///
 /// The only error that means "start from nothing" is the file not being there.
 /// Everything else — a lock held by another process, a permission problem, JSON
 /// we cannot parse — is reported, because the alternative is treating somebody's
 /// unreadable settings as an empty object and then writing that back over them.
 fn read_settings() -> Result<Value, String> {
-    let path = settings_path();
-    match std::fs::read(&path) {
-        Ok(bytes) => parse_settings(&bytes, &path.display().to_string()),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(json!({})),
+    read_snapshot(&settings_path()).map(|(value, _)| value)
+}
+
+/// Keep the parsed content and its fingerprint bound to the same read.
+fn read_snapshot(path: &Path) -> Result<(Value, String), String> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok((
+            parse_settings(&bytes, &path.display().to_string())?,
+            format!("file:{}", fingerprint(&bytes)),
+        )),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok((json!({}), "missing".into())),
         // A lock, a permission problem, a bad drive: all of them mean we do not
         // know what is in there, and not knowing is not the same as empty.
         Err(err) => Err(format!("Can't read {}: {err}", path.display())),
@@ -96,7 +103,15 @@ fn parse_settings(bytes: &[u8], path: &str) -> Result<Value, String> {
         return Ok(json!({}));
     }
     match serde_json::from_slice::<Value>(text) {
-        Ok(v) if v.is_object() => Ok(v),
+        Ok(v) if v.is_object() => {
+            if let Some(hooks) = v.get("hooks") {
+                let hooks = hooks.as_object().ok_or_else(|| format!("{path}: hooks must be an object; nothing will be overwritten."))?;
+                if hooks.values().any(|event| !event.is_array()) {
+                    return Err(format!("{path}: every hook event must contain an array; nothing will be overwritten."));
+                }
+            }
+            Ok(v)
+        },
         Ok(_) => Err(format!("{path} isn't a JSON object — Coucou won't touch it.")),
         Err(err) => Err(format!(
             "{path} isn't valid JSON ({err}). Fix or move it, then try again — Coucou won't overwrite it."
@@ -112,28 +127,85 @@ fn read_settings_lossy() -> Value {
 }
 
 fn hook_command(event: &str) -> String {
-    let exe = settings::hook_exe_path().to_string_lossy().replace('\\', "/");
-    format!("\"{exe}\" {event}")
+    let exe = settings::hook_exe_path()
+        .to_string_lossy()
+        .replace('\\', "/");
+    // Git Bash expands $ and backticks inside double quotes. A profile path is
+    // data, never shell code; single quotes protect it, including apostrophes.
+    format!("'{}' {event}", exe.replace('\'', "'\\''"))
+}
+
+fn handler_is_ours(handler: &Value) -> bool {
+    if handler.get("type").and_then(Value::as_str) != Some("command") {
+        return false;
+    }
+    let Some(command) = handler.get("command").and_then(Value::as_str) else {
+        return false;
+    };
+    // Recognise one invocation of our executable, not a substring in a foreign
+    // command (e.g. an audit script mentioning coucou-hook.exe).
+    let command = command.trim();
+    let (exe, args) = if let Some(tail) = command.strip_prefix('"') {
+        let Some(end) = tail.find('"') else {
+            return false;
+        };
+        (&tail[..end], &tail[end + 1..])
+    } else if let Some(tail) = command.strip_prefix('\'') {
+        let Some(end) = tail.find('\'') else {
+            return false;
+        };
+        // Paths containing apostrophes are handled by exact current commands.
+        if tail[end + 1..].starts_with('\\') {
+            return HOOK_EVENTS
+                .iter()
+                .any(|(event, _)| command == hook_command(event));
+        }
+        (&tail[..end], &tail[end + 1..])
+    } else {
+        let end = command.find(char::is_whitespace).unwrap_or(command.len());
+        (&command[..end], &command[end..])
+    };
+    let exe = exe.rsplit(['/', '\\']).next().unwrap_or("");
+    let args = args.trim();
+    exe.eq_ignore_ascii_case(MARKER)
+        && (HOOK_EVENTS.iter().any(|(event, _)| args == *event)
+            || ["PostToolUseFailure", "Notification", "StopFailure"].contains(&args))
 }
 
 fn entry_is_ours(entry: &Value) -> bool {
     entry
         .get("hooks")
         .and_then(Value::as_array)
-        .map(|hooks| {
-            hooks.iter().any(|h| {
-                h.get("command")
-                    .and_then(Value::as_str)
-                    .map(|c| c.contains(MARKER))
-                    .unwrap_or(false)
-            })
-        })
+        .map(|hooks| hooks.iter().any(handler_is_ours))
         .unwrap_or(false)
+}
+
+/// Remove only our handlers and preserve the group's matcher and other fields.
+fn clean_entry(entry: &Value) -> Option<Value> {
+    let Some(handlers) = entry.get("hooks").and_then(Value::as_array) else {
+        return Some(entry.clone());
+    };
+    if !handlers.iter().any(handler_is_ours) {
+        return Some(entry.clone());
+    }
+    let kept: Vec<Value> = handlers
+        .iter()
+        .filter(|handler| !handler_is_ours(handler))
+        .cloned()
+        .collect();
+    if kept.is_empty() {
+        return None;
+    }
+    let mut cleaned = entry.clone();
+    cleaned["hooks"] = Value::Array(kept);
+    Some(cleaned)
 }
 
 /// Settings with Coucou's hooks added; everything else is left untouched.
 fn merged(existing: &Value) -> Value {
-    let mut root = existing.as_object().cloned().unwrap_or_default();
+    // Also remove our obsolete events from previous versions.
+    let cleaned = without_ours(existing);
+    let mut root = cleaned.as_object().cloned().unwrap_or_default();
     let mut hooks = root
         .get("hooks")
         .and_then(Value::as_object)
@@ -146,7 +218,7 @@ fn merged(existing: &Value) -> Value {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        list.retain(|entry| !entry_is_ours(entry));
+        list = list.iter().filter_map(clean_entry).collect();
         list.push(json!({
             "hooks": [{
                 "type": "command",
@@ -171,9 +243,8 @@ fn without_ours(existing: &Value) -> Value {
     for (event, value) in hooks {
         match value.as_array() {
             Some(list) => {
-                let kept: Vec<Value> =
-                    list.iter().filter(|e| !entry_is_ours(e)).cloned().collect();
-                if !kept.is_empty() {
+                let kept: Vec<Value> = list.iter().filter_map(clean_entry).collect();
+                if !kept.is_empty() || list.is_empty() {
                     out.insert(event, Value::Array(kept));
                 }
             }
@@ -198,15 +269,14 @@ fn pretty(v: &Value) -> String {
 /// quietly overwrite the first backup.
 fn stamp() -> String {
     let t = unsafe { GetLocalTime() };
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
     format!(
-        "{:04}{:02}{:02}-{:02}{:02}{:02}",
+        "{:04}{:02}{:02}-{:02}{:02}{:02}-{nanos}",
         t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond
     )
-}
-
-fn backup_path() -> PathBuf {
-    let p = settings_path();
-    p.with_file_name(format!("settings.json.bak-{}", stamp()))
 }
 
 /// Identifies the exact bytes a preview was computed from. FNV-1a is plenty:
@@ -218,13 +288,6 @@ fn fingerprint(bytes: &[u8]) -> String {
         hash = hash.wrapping_mul(0x1000_0000_01b3);
     }
     format!("{hash:016x}")
-}
-
-fn current_fingerprint() -> String {
-    match std::fs::read(settings_path()) {
-        Ok(bytes) => fingerprint(&bytes),
-        Err(_) => fingerprint(b""),
-    }
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -252,13 +315,24 @@ pub fn status() -> HookStatus {
 }
 
 pub fn preview(install: bool) -> Result<HookPreview, String> {
-    let current = read_settings()?;
-    let next = if install { merged(&current) } else { without_ours(&current) };
+    preview_at(&settings_path(), install)
+}
+
+fn preview_at(path: &Path, install: bool) -> Result<HookPreview, String> {
+    let (current, fingerprint) = read_snapshot(path)?;
+    let next = if install {
+        merged(&current)
+    } else {
+        without_ours(&current)
+    };
     Ok(HookPreview {
         diff: unified_diff(&pretty(&current), &pretty(&next)),
-        backup: backup_path().to_string_lossy().to_string(),
-        settings_path: settings_path().to_string_lossy().to_string(),
-        fingerprint: current_fingerprint(),
+        backup: path
+            .with_file_name(format!("hooks.json.bak-{}", stamp()))
+            .to_string_lossy()
+            .to_string(),
+        settings_path: path.to_string_lossy().to_string(),
+        fingerprint,
     })
 }
 
@@ -269,34 +343,63 @@ pub fn preview(install: bool) -> Result<HookPreview, String> {
 /// and make them look at a fresh diff, because the only thing worse than not
 /// installing the hooks is silently reverting somebody else's edit.
 pub fn write(install: bool, fingerprint: &str) -> Result<String, String> {
-    let path = settings_path();
+    write_at(&settings_path(), install, fingerprint)
+}
+
+fn write_at(path: &Path, install: bool, fingerprint: &str) -> Result<String, String> {
     let dir = path.parent().unwrap_or(Path::new("."));
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
 
     // Read before the backup: an unreadable file must abort before we touch
     // anything at all.
-    let current = read_settings()?;
-    if current_fingerprint() != fingerprint {
+    let (current, current_fingerprint) = read_snapshot(path)?;
+    if current_fingerprint != fingerprint {
         return Err(format!(
             "{} changed since the preview. Nothing was written — review the new diff.",
             path.display()
         ));
     }
 
-    let backup = backup_path();
+    let backup = path.with_file_name(format!("hooks.json.bak-{}", stamp()));
     if path.exists() {
-        std::fs::copy(&path, &backup).map_err(|e| format!("backup failed: {e}"))?;
+        let mut source = std::fs::File::open(path).map_err(|e| format!("backup failed: {e}"))?;
+        let mut target = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&backup)
+            .map_err(|e| format!("backup failed: {e}"))?;
+        std::io::copy(&mut source, &mut target).map_err(|e| format!("backup failed: {e}"))?;
+        target
+            .sync_all()
+            .map_err(|e| format!("backup failed: {e}"))?;
     }
 
-    let next = if install { merged(&current) } else { without_ours(&current) };
+    let next = if install {
+        merged(&current)
+    } else {
+        without_ours(&current)
+    };
     let mut text = pretty(&next);
     text.push('\n');
 
     // Write beside the target and rename over it: a crash or a full disk leaves
     // the original settings.json intact rather than half a file.
-    let temp = path.with_extension(format!("json.coucou-{}", std::process::id()));
-    std::fs::write(&temp, text.as_bytes()).map_err(|e| format!("write failed: {e}"))?;
-    if let Err(err) = std::fs::rename(&temp, &path) {
+    let temp = path.with_extension(format!("json.coucou-{}-{}", std::process::id(), stamp()));
+    let mut output = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp)
+        .map_err(|e| format!("write failed: {e}"))?;
+    output
+        .write_all(text.as_bytes())
+        .and_then(|_| output.sync_all())
+        .map_err(|e| format!("write failed: {e}"))?;
+    drop(output);
+    if read_snapshot(path)?.1 != fingerprint {
+        let _ = std::fs::remove_file(&temp);
+        return Err("hooks.json changed while preparing the write. Review a new preview.".into());
+    }
+    if let Err(err) = std::fs::rename(&temp, path) {
         let _ = std::fs::remove_file(&temp);
         return Err(format!("write failed: {err}"));
     }
@@ -320,7 +423,10 @@ pub fn ensure_hook_exe(app: &AppHandle) {
     }
 
     let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Ok(p) = app.path().resolve("coucou-hook.exe", tauri::path::BaseDirectory::Resource) {
+    if let Ok(p) = app
+        .path()
+        .resolve("coucou-hook.exe", tauri::path::BaseDirectory::Resource)
+    {
         candidates.push(p);
     }
     if let Ok(exe) = std::env::current_exe() {
@@ -337,7 +443,7 @@ pub fn ensure_hook_exe(app: &AppHandle) {
     let tried: Vec<String> = candidates.iter().map(|p| p.display().to_string()).collect();
     let Some(src) = candidates.into_iter().find(|p| p.exists()) else {
         crate::log::line(format!(
-            "coucou-hook.exe not found — Claude Code hooks cannot work. Looked in: {}",
+            "coucou-hook.exe not found — Codex hooks cannot work. Looked in: {}",
             tried.join(", ")
         ));
         return;
@@ -466,8 +572,14 @@ mod tests {
     #[test]
     fn empty_and_whitespace_files_start_from_nothing() {
         assert_eq!(parse_settings(b"", WHERE).unwrap(), json!({}));
-        assert_eq!(parse_settings(b"  
-	 ", WHERE).unwrap(), json!({}));
+        assert_eq!(
+            parse_settings(
+                b"  
+	 ", WHERE
+            )
+            .unwrap(),
+            json!({})
+        );
     }
 
     #[test]
@@ -493,7 +605,9 @@ mod tests {
 
         let pre = after["hooks"]["PreToolUse"].as_array().unwrap();
         assert!(
-            pre.iter().any(|e| serde_json::to_string(e).unwrap().contains("someone-elses-tool.exe")),
+            pre.iter().any(|e| serde_json::to_string(e)
+                .unwrap()
+                .contains("someone-elses-tool.exe")),
             "another tool's hook was dropped"
         );
         assert!(pre.iter().any(entry_is_ours), "our own hook was not added");
@@ -511,17 +625,12 @@ mod tests {
         assert_ne!(fingerprint(b""), fingerprint(b"{}"));
     }
 
-    /// Everything filesystem-shaped lives in one test on purpose: it points
-    /// USERPROFILE at a temp directory, and that is process-wide.
     #[test]
     fn writing_backs_up_preserves_and_refuses_a_changed_file() {
-        let tmp = std::env::temp_dir().join(format!("coucou-hooks-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(tmp.join(".claude")).unwrap();
-        std::env::set_var("USERPROFILE", &tmp);
-
-        let path = settings_path();
-        assert!(path.starts_with(&tmp), "the test must not touch the real home");
+        let tmp =
+            std::env::temp_dir().join(format!("coucou-hooks-{}-{}", std::process::id(), stamp()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let path = tmp.join("hooks.json");
 
         // A real-shaped file, written the way PowerShell 5 would: UTF-8 with BOM.
         let original = r#"{"model":"claude-opus-5","theme":"dark","tui":{"x":1},"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"other-tool.exe"}]}]}}"#;
@@ -530,9 +639,12 @@ mod tests {
         std::fs::write(&path, &bytes).unwrap();
 
         // Install.
-        let plan = preview(true).expect("a BOM must not stop the preview");
-        assert!(plan.diff.contains("coucou-hook"), "the diff must show what changes");
-        let backup = write(true, &plan.fingerprint).expect("install should succeed");
+        let plan = preview_at(&path, true).expect("a BOM must not stop the preview");
+        assert!(
+            plan.diff.contains("coucou-hook"),
+            "the diff must show what changes"
+        );
+        let backup = write_at(&path, true, &plan.fingerprint).expect("install should succeed");
 
         // The backup holds the original bytes, BOM and all.
         assert_eq!(std::fs::read(&backup).unwrap(), bytes);
@@ -543,23 +655,81 @@ mod tests {
         assert_eq!(after["theme"], "dark");
         assert_eq!(after["tui"]["x"], 1);
         let pre = after["hooks"]["PreToolUse"].as_array().unwrap();
-        assert!(pre.iter().any(|e| serde_json::to_string(e).unwrap().contains("other-tool.exe")));
-        assert!(status().installed);
+        assert!(pre
+            .iter()
+            .any(|e| serde_json::to_string(e).unwrap().contains("other-tool.exe")));
+        assert!(pre.iter().any(entry_is_ours));
 
         // A file that moved since the preview is refused, and left alone.
-        let stale = preview(false).unwrap();
+        let stale = preview_at(&path, false).unwrap();
         std::fs::write(&path, br#"{"model":"someone-else-edited-this"}"#).unwrap();
-        let err = write(false, &stale.fingerprint).unwrap_err();
+        let err = write_at(&path, false, &stale.fingerprint).unwrap_err();
         assert!(err.contains("changed since the preview"), "got: {err}");
         let untouched: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(untouched["model"], "someone-else-edited-this");
 
         // Content we cannot parse is refused before anything is written.
         std::fs::write(&path, b"{ broken").unwrap();
-        assert!(preview(true).is_err());
-        assert!(write(true, "whatever").is_err());
+        assert!(preview_at(&path, true).is_err());
+        assert!(write_at(&path, true, "whatever").is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"{ broken");
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn mixed_groups_and_marker_mentions_survive_install_and_uninstall() {
+        let mixed = json!({"matcher":"Bash","timeout":7,"hooks":[
+            {"type":"command","command":"\"C:/old/coucou-hook.exe\" PreToolUse"},
+            {"type":"command","command":"audit.exe --check coucou-hook.exe"},
+            {"type":"prompt","prompt":"keep this validator"}
+        ]});
+        let expected = json!({"matcher":"Bash","timeout":7,"hooks":[
+            {"type":"command","command":"audit.exe --check coucou-hook.exe"},
+            {"type":"prompt","prompt":"keep this validator"}
+        ]});
+        assert_eq!(clean_entry(&mixed), Some(expected.clone()));
+        let before = json!({"hooks":{"PreToolUse":[mixed],"EmptyEvent":[]}});
+        let expected_root = json!({"hooks":{"PreToolUse":[expected],"EmptyEvent":[]}});
+        assert_eq!(without_ours(&before), expected_root);
+        assert_eq!(without_ours(&merged(&before)), expected_root);
+        assert!(handler_is_ours(
+            &json!({"type":"command","command":hook_command("PreToolUse")})
+        ));
+        for command in [
+            "echo coucou-hook.exe",
+            "coucou-hook.exe PreToolUse; other.exe",
+            "different-coucou-hook.exe PreToolUse",
+        ] {
+            assert!(!handler_is_ours(
+                &json!({"type":"command","command":command})
+            ));
+        }
+    }
+
+    #[test]
+    fn malformed_hook_structures_refuse_instead_of_being_overwritten() {
+        for invalid in [
+            br#"{"hooks":[]}"#.as_slice(),
+            br#"{"hooks":{"PreToolUse":{}}}"#.as_slice(),
+        ] {
+            assert!(parse_settings(invalid, WHERE).is_err());
+        }
+    }
+
+    #[test]
+    fn missing_and_empty_file_are_distinct_for_preview_integrity() {
+        let tmp = std::env::temp_dir().join(format!(
+            "coucou-fingerprint-{}-{}",
+            std::process::id(),
+            stamp()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let path = tmp.join("hooks.json");
+        let plan = preview_at(&path, true).unwrap();
+        std::fs::write(&path, b"").unwrap();
+        assert!(write_at(&path, true, &plan.fingerprint).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"");
+        std::fs::remove_dir_all(&tmp).unwrap();
     }
 }

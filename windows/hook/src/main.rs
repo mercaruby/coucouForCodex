@@ -1,16 +1,16 @@
-//! coucou-hook — the relay Claude Code runs on every hook event.
+//! coucou-hook — the relay Codex runs on every hook event.
 //!
 //! Reads the hook JSON on stdin, adds a little terminal context, and hands it to
-//! Coucou over the named pipe `\\.\pipe\coucou-<sid>`.
+//! Coucou over the named pipe `\\.\pipe\coucou-codex-<sid>`.
 //!
-//! Hard rule (docs/CLAUDE.md): **never block Claude Code.**
+//! Hard rule (docs/CLAUDE.md): **never block Codex.**
 //! * If the pipe does not exist — Coucou is closed — we exit 0 immediately with
 //!   nothing on stdout, and the session carries on untouched.
 //! * Every step runs under a deadline enforced by the main thread, so a pipe that
 //!   accepts the connection and then stops reading cannot wedge the session
 //!   either: we abandon the worker and exit.
 //! * Only `PermissionRequest` waits for an answer, because approving from the
-//!   island is the whole point. No answer means empty stdout, and Claude Code
+//!   island is the whole point. No answer means empty stdout, and Codex
 //!   asks in the terminal exactly as if Coucou were not installed.
 //!
 //! Usage: `coucou-hook <EventName>` (the name is also read from the JSON).
@@ -19,7 +19,7 @@ use std::io::{Read, Write};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-/// Budget for getting a pipe connection. Beyond this Claude Code wins, always.
+/// Budget for getting a pipe connection. Beyond this Codex wins, always.
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(300);
 /// Whole-run budget for an event nobody waits on: connect and write, no more.
 const FIRE_AND_FORGET_BUDGET: Duration = Duration::from_secs(2);
@@ -45,11 +45,11 @@ mod win;
 fn pipe_path() -> String {
     let key = win::current_user_sid()
         .unwrap_or_else(|| std::env::var("USERNAME").unwrap_or_else(|_| "user".into()));
-    format!(r"\\.\pipe\coucou-{key}")
+    format!(r"\\.\pipe\coucou-codex-{key}")
 }
 
 /// Opens the pipe. Retries only while the server is busy: any other error means
-/// there is nothing to talk to, and waiting would only delay Claude Code.
+/// there is nothing to talk to, and waiting would only delay Codex.
 fn connect() -> Option<std::fs::File> {
     use std::os::windows::io::AsRawHandle;
     let path = pipe_path();
@@ -93,7 +93,7 @@ fn main() {
             let _ = out.flush();
         }
     }
-    // Nothing printed: Claude Code asks in the terminal, as if we were not here.
+    // Nothing printed: Codex asks in the terminal, as if we were not here.
     std::process::exit(0);
 }
 
@@ -103,7 +103,7 @@ fn main() {
 fn decision_json(decision: &str) -> Option<String> {
     let behavior = match decision.trim() {
         // "always" still answers a plain allow; remembering it is the island's
-        // business, not Claude Code's.
+        // business, not Codex's.
         "allow" | "always" => r#"{"behavior":"allow"}"#.to_string(),
         "deny" => r#"{"behavior":"deny","message":"Denied from Coucou"}"#.to_string(),
         _ => return None,
@@ -243,7 +243,7 @@ mod tests {
             decision_json("deny").unwrap(),
             r#"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Denied from Coucou"}}}"#
         );
-        // "always" is an island concept; Claude Code just gets an allow.
+        // "always" is an island concept; Codex just gets an allow.
         assert!(decision_json("always").unwrap().contains(r#""behavior":"allow""#));
     }
 

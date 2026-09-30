@@ -1,5 +1,5 @@
 // Settings window — the place where anything that writes to disk is confirmed.
-// Stage 2 covers the Claude Code hooks and the general preferences; API keys and
+// Stage 2 covers the Codex hooks and the general preferences; API keys and
 // integrations land here too in a later stage.
 
 import "./settings.css";
@@ -9,11 +9,30 @@ import { h, clear } from "../views/dom";
 
 let settings: Settings = { ...DEFAULT_SETTINGS };
 let version = "";
+let saveQueue: Promise<boolean> = Promise.resolve(true);
+let updateChatControls = () => {};
+let updateApiVisibility = () => {};
 
 const root = document.getElementById("settings-root")!;
 
 async function save() {
-  await Bridge.saveSettings(settings);
+  const snapshot = { ...settings, activeIntegrations: [...settings.activeIntegrations] };
+  saveQueue = saveQueue.then(async () => {
+    try {
+      await Bridge.saveSettings(snapshot);
+      document.getElementById("save-error")?.remove();
+      return true;
+    } catch {
+      let error = document.getElementById("save-error");
+      if (!error) {
+        error = h("div", { id: "save-error", class: "notice err", role: "alert" });
+        root.prepend(error);
+      }
+      error.textContent = "Could not save preferences. Check your settings folder permissions and try again.";
+      return false;
+    }
+  });
+  return saveQueue;
 }
 
 // ── Reusable bits ─────────────────────────────────────────────────────────────
@@ -41,14 +60,14 @@ function renderDiff(text: string): HTMLElement {
   return box;
 }
 
-// ── Claude Code section ───────────────────────────────────────────────────────
+// ── Codex section ───────────────────────────────────────────────────────
 
-function claudeSection(status: HookStatus): HTMLElement {
+function codexSection(status: HookStatus): HTMLElement {
   const body = h("div", { style: "display:flex;flex-direction:column;gap:12px" });
   const section = h(
     "section",
     {},
-    h("h2", {}, statusDot(status.installed), h("span", { text: "Claude Code" })),
+    h("h2", {}, statusDot(status.installed), h("span", { text: "Codex" })),
     body,
   );
 
@@ -59,7 +78,7 @@ function claudeSection(status: HookStatus): HTMLElement {
     draw();
     const head = section.querySelector("h2")!;
     clear(head);
-    head.append(statusDot(status.installed), h("span", { text: "Claude Code" }));
+    head.append(statusDot(status.installed), h("span", { text: "Codex" }));
   };
 
   function draw() {
@@ -67,11 +86,11 @@ function claudeSection(status: HookStatus): HTMLElement {
       h("div", {
         class: "hint",
         text: status.installed
-          ? "Coucou is hooked into your Claude Code sessions. Tool calls, questions and permission requests show up in the island, and you can answer them there."
-          : "Install the hooks to see your Claude Code sessions in the island and approve permissions without leaving what you are doing.",
+          ? "Coucou is hooked into your Codex sessions. Tool calls, questions and permission requests show up in the island, and you can answer them there."
+          : "Install the hooks to see your Codex sessions in the island and respond to permission requests there. If Coucou is unavailable, Codex asks in its own interface.",
       }),
       h("div", { class: "row" },
-        h("label", { text: "settings.json" }),
+        h("label", { text: "hooks.json" }),
         h("span", { class: "path", text: status.settingsPath }),
       ),
       h("div", { class: "row" },
@@ -80,6 +99,10 @@ function claudeSection(status: HookStatus): HTMLElement {
         statusDot(status.hookReady),
       ),
     );
+    body.append(h("div", {
+      class: "hint",
+      text: "After installation, review and trust the hooks with /hooks inside Codex. This updates only Codex hooks.json; your Claude configuration is untouched.",
+    }));
 
     if (!status.hookReady) {
       body.append(h("div", {
@@ -95,7 +118,7 @@ function claudeSection(status: HookStatus): HTMLElement {
       onclick: () => showPreview(true),
     });
     // Writing hook commands that point at a relay which isn't there would give
-    // every Claude Code session a broken hook and nothing to show for it.
+    // every Codex session a broken hook and nothing to show for it.
     if (!status.hookReady) {
       install.disabled = true;
       install.title = "The relay isn't installed yet.";
@@ -116,7 +139,7 @@ function claudeSection(status: HookStatus): HTMLElement {
     try {
       preview = await Bridge.hooksPreview(install);
     } catch (err) {
-      // An unreadable or invalid settings.json stops here rather than being
+      // An unreadable or invalid hooks.json stops here rather than being
       // treated as empty and written over.
       clear(body);
       body.append(
@@ -134,7 +157,7 @@ function claudeSection(status: HookStatus): HTMLElement {
       h("div", {
         class: "hint",
         text: install
-          ? "This is exactly what will change in your settings.json. Your own hooks are left untouched."
+          ? "This is exactly what will change in your hooks.json. Your own hooks are left untouched."
           : "This removes Coucou's entries only. Your own hooks are left untouched.",
       }),
       renderDiff(preview.diff),
@@ -153,7 +176,7 @@ function claudeSection(status: HookStatus): HTMLElement {
         clear(body);
         body.append(h("div", {
           class: "notice ok",
-          text: `Done. Previous settings saved as ${backup}. Open a new Claude Code session to pick the hooks up.`,
+          text: `Done. Previous settings saved as ${backup}. Open Codex and review the hooks with /hooks before trusting them.`,
         }));
         window.setTimeout(() => void rebuild(), 2600);
       } catch (err) {
@@ -171,21 +194,127 @@ function claudeSection(status: HookStatus): HTMLElement {
   return section;
 }
 
-// ── Claude API section ────────────────────────────────────────────────────────
+// ── Chat backend ──────────────────────────────────────────────────────────────
 
 const MODELS: [string, string][] = [
-  ["claude-opus-5", "Claude Opus 5"],
-  ["claude-sonnet-5", "Claude Sonnet 5"],
-  ["claude-haiku-4-5", "Claude Haiku 4.5"],
+  ["", "Default server model"],
+  ["gpt-5.6-sol", "GPT-5.6 Sol"],
 ];
+
+function codexChatSection(): HTMLElement {
+  const backend = h("select", { "aria-label": "Chat backend" });
+  backend.append(
+    h("option", { value: "codex", text: "Codex · ChatGPT login" }),
+    h("option", { value: "api", text: "OpenAI API · separate billing" }),
+  );
+  const hint = h("div", { class: "hint" });
+  const model = h("select", { "aria-label": "Chat model" });
+  for (const [id, label] of MODELS) model.append(h("option", { value: id, text: label }));
+  if (!MODELS.some(([id]) => id === settings.model)) {
+    model.append(h("option", { value: settings.model, text: settings.model }));
+  }
+  const modelHint = h("div", { class: "hint" });
+  const path = h("input", {
+    type: "text", placeholder: "Optional absolute path to codex.exe (otherwise PATH)",
+    style: "flex:1 1 auto;min-width:0", autocomplete: "off", spellcheck: "false",
+    "aria-label": "Codex executable path",
+  });
+  const savePath = h("button", { text: "Save path" });
+  const check = h("button", { text: "Check connection" });
+  const feedback = h("div", { role: "status", "aria-live": "polite" });
+  const pathRow = h("div", { class: "row" }, h("label", { text: "Codex executable" }), path, savePath);
+  const connectionRow = h("div", { class: "row" }, check);
+  let statusRevision = 0;
+
+  updateChatControls = () => {
+    backend.value = settings.chatBackend;
+    model.value = settings.model;
+    path.value = settings.codexPath;
+    const codex = settings.chatBackend === "codex";
+    hint.textContent = codex
+      ? "Uses the official Codex CLI. Sign in using codex login with ChatGPT. Coucou does not request or store your ChatGPT password or session tokens. Sending a prompt uses your Codex account limits."
+      : "Sends prompts to OpenAI's API using your optional saved API key. API usage is billed separately from your ChatGPT subscription.";
+    modelHint.textContent = codex
+      ? "Default uses the model available to your Codex account. Changing the backend, executable or model starts a new conversation."
+      : "Default uses gpt-5.6-sol. The model must be available to your API project. Changing the backend or model starts a new conversation.";
+    pathRow.style.display = codex ? "" : "none";
+    connectionRow.style.display = codex ? "" : "none";
+    updateApiVisibility();
+  };
+
+  async function changePreference(change: () => void) {
+    const before = { ...settings };
+    const revision = ++statusRevision;
+    clear(feedback);
+    change();
+    if (!(await save()) && revision === statusRevision) {
+      settings.chatBackend = before.chatBackend;
+      settings.model = before.model;
+      settings.codexPath = before.codexPath;
+    }
+    if (revision === statusRevision) updateChatControls();
+  }
+
+  backend.addEventListener("change", () => {
+    const selected = backend.value as Settings["chatBackend"];
+    void changePreference(() => { settings.chatBackend = selected; });
+  });
+  model.addEventListener("change", () => {
+    const selected = model.value;
+    void changePreference(() => { settings.model = selected; });
+  });
+  savePath.addEventListener("click", () => {
+    const selected = path.value.trim();
+    if (selected && !/^(?:[A-Za-z]:[\\/]|\\\\)/.test(selected)) {
+      clear(feedback);
+      feedback.append(h("div", { class: "notice err", text: "Use an absolute path to codex.exe or leave this blank to search PATH." }));
+      return;
+    }
+    void changePreference(() => { settings.codexPath = selected; });
+  });
+  check.addEventListener("click", async () => {
+    clear(feedback);
+    if (path.value.trim() !== settings.codexPath) {
+      feedback.append(h("div", { class: "notice warn", text: "Save the executable path before checking the connection." }));
+      return;
+    }
+    const revision = ++statusRevision;
+    check.disabled = true;
+    try {
+      const status = await Bridge.codexStatus();
+      if (revision !== statusRevision) return;
+      feedback.append(h("div", {
+        class: status.authenticated ? "notice ok" : "notice warn",
+        text: status.authenticated
+          ? `Codex is signed in. Executable: ${status.executable}`
+          : "Codex is available but is not signed in with ChatGPT. Run codex login in a terminal, then check again.",
+      }));
+    } catch (err) {
+      if (revision !== statusRevision) return;
+      feedback.append(h("div", { class: "notice err", text: String(err).replace(/^Error:\s*/, "") }));
+    } finally {
+      check.disabled = false;
+    }
+  });
+  updateChatControls();
+  return h("section", {},
+    h("h2", {}, h("span", { text: "Chat" })),
+    h("div", { class: "row" }, h("label", { text: "Backend" }), backend),
+    hint,
+    h("div", { class: "row" }, h("label", { text: "Model" }), model),
+    modelHint, pathRow, connectionRow, feedback,
+  );
+}
+
+// ── Optional OpenAI API credentials ───────────────────────────────────────────
 
 function apiSection(hasKey: boolean): HTMLElement {
   const dot = statusDot(hasKey);
-  const state = h("span", { class: "hint", text: hasKey ? "Key saved in the Windows Credential Manager." : "No key yet — the chat needs one." });
+  const state = h("span", { class: "hint", text: hasKey ? "Key saved in the Windows Credential Manager." : "No API key saved. Add one only if you choose the API backend." });
 
   const field = h("input", {
     type: "password",
-    placeholder: hasKey ? "••••••••••••  (stored)" : "sk-ant-...",
+    placeholder: hasKey ? "••••••••••••  (stored)" : "sk-...",
     style: "flex:1 1 auto;min-width:0",
     autocomplete: "off",
     spellcheck: "false",
@@ -196,12 +325,12 @@ function apiSection(hasKey: boolean): HTMLElement {
   const feedback = h("div", {});
 
   async function refresh() {
-    const present = (await Bridge.secretPresent("anthropic-api-key")) ?? false;
+    const present = (await Bridge.secretPresent("openai-api-key")) ?? false;
     dot.style.background = present ? "#22c55e" : "#f4505e";
     state.textContent = present
       ? "Key saved in the Windows Credential Manager."
-      : "No key yet — the chat needs one.";
-    field.placeholder = present ? "••••••••••••  (stored)" : "sk-ant-...";
+      : "No API key saved. Add one only if you choose the API backend.";
+    field.placeholder = present ? "••••••••••••  (stored)" : "sk-...";
     clearBtn.style.display = present ? "" : "none";
   }
 
@@ -210,19 +339,19 @@ function apiSection(hasKey: boolean): HTMLElement {
     if (!value) return;
     clear(feedback);
     try {
-      await Bridge.secretSet("anthropic-api-key", value);
+      await Bridge.secretSet("openai-api-key", value);
       field.value = "";
-      feedback.append(h("div", { class: "notice ok", text: "Saved. It never touches disk." }));
+      feedback.append(h("div", { class: "notice ok", text: "Saved in Windows Credential Manager." }));
       await refresh();
-    } catch (err) {
-      feedback.append(h("div", { class: "notice err", text: `Could not save: ${String(err)}` }));
+    } catch {
+      feedback.append(h("div", { class: "notice err", text: "Could not save the key in Windows Credential Manager." }));
     }
   });
 
   clearBtn.addEventListener("click", async () => {
     clear(feedback);
     try {
-      await Bridge.secretClear("anthropic-api-key");
+      await Bridge.secretClear("openai-api-key");
       feedback.append(h("div", { class: "notice ok", text: "Key removed." }));
       await refresh();
     } catch (err) {
@@ -230,28 +359,20 @@ function apiSection(hasKey: boolean): HTMLElement {
     }
   });
 
-  const model = h("select", {}) as HTMLSelectElement;
-  for (const [id, label] of MODELS) model.append(h("option", { value: id, text: label }));
-  if (!MODELS.some(([id]) => id === settings.model)) {
-    model.append(h("option", { value: settings.model, text: settings.model }));
-  }
-  model.value = settings.model;
-  model.addEventListener("change", () => {
-    settings.model = model.value;
-    void save();
-  });
-
   clearBtn.style.display = hasKey ? "" : "none";
 
-  return h(
+  const section = h(
     "section",
     {},
-    h("h2", {}, dot, h("span", { text: "Claude" })),
+    h("h2", {}, dot, h("span", { text: "OpenAI API (optional)" })),
     state,
     h("div", { class: "row" }, h("label", { text: "API key" }), field, saveBtn, clearBtn),
-    h("div", { class: "row" }, h("label", { text: "Model" }), model),
+    h("div", { class: "hint", text: "Optional. Never paste your ChatGPT password, browser cookies or session tokens here." }),
     feedback,
   );
+  updateApiVisibility = () => { section.style.display = settings.chatBackend === "api" ? "" : "none"; };
+  updateApiVisibility();
+  return section;
 }
 
 // ── Integrations section ──────────────────────────────────────────────────────
@@ -429,7 +550,7 @@ async function main() {
     installed: false, settingsPath: "", hookPath: "", hookReady: false,
   };
 
-  const hasKey = (await Bridge.secretPresent("anthropic-api-key")) ?? false;
+  const hasKey = (await Bridge.secretPresent("openai-api-key")) ?? false;
 
   const keys = [
     "stripe-api-key", "github-token", "vercel-token",
@@ -441,7 +562,8 @@ async function main() {
   clear(root);
   root.append(
     h("h1", {}, h("span", { text: "Coucou" }), h("span", { class: "version", text: version })),
-    claudeSection(status),
+    codexSection(status),
+    codexChatSection(),
     apiSection(hasKey),
     integrationsSection(present),
     generalSection(),
@@ -453,6 +575,7 @@ async function main() {
 
   void onEvent<Settings>("settings-changed", (s) => {
     settings = { ...settings, ...s };
+    updateChatControls();
   });
 }
 

@@ -47,9 +47,10 @@ fn emit(app: &AppHandle, update: IntegrationUpdate) {
 
 fn client() -> reqwest::Client {
     reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(TIMEOUT)
         .build()
-        .unwrap_or_default()
+        .expect("static integration HTTP client configuration must be valid")
 }
 
 /// Set from the tray's Pause item. While it is on, nothing reaches the network:
@@ -105,6 +106,9 @@ where
 
 /// One-shot refresh from the Refresh buttons in the island.
 pub async fn poll_once(app: AppHandle, id: &str) {
+    if PAUSED.load(Ordering::Relaxed) || !enabled(&app, id) {
+        return;
+    }
     match id {
         "integration_stripe" => poll_stripe(app).await,
         "integration_github" => poll_github(app).await,
@@ -144,8 +148,13 @@ fn status_error(code: u16, unauthorised_hint: &str) -> String {
 // ── Stripe ────────────────────────────────────────────────────────────────────
 
 async fn poll_stripe(app: AppHandle) {
-    let Some(key) = secrets::get("stripe-api-key") else { return };
-    let auth = format!("Basic {}", crate::claude::base64_for(format!("{key}:").as_bytes()));
+    let Some(key) = secrets::get("stripe-api-key") else {
+        return;
+    };
+    let auth = format!(
+        "Basic {}",
+        crate::openai::base64_for(format!("{key}:").as_bytes())
+    );
     let http = client();
 
     let balance = http
@@ -177,21 +186,30 @@ async fn poll_stripe(app: AppHandle) {
         }
         Ok(r) => {
             let code = r.status().as_u16();
-            emit(&app, IntegrationUpdate {
-                id: "integration_stripe",
-                data: json!({}),
-                error: Some(status_error(code, "Use a secret key (sk_live_… not pk_live_…)")),
-                event: None,
-            });
+            emit(
+                &app,
+                IntegrationUpdate {
+                    id: "integration_stripe",
+                    data: json!({}),
+                    error: Some(status_error(
+                        code,
+                        "Use a secret key (sk_live_… not pk_live_…)",
+                    )),
+                    event: None,
+                },
+            );
             return;
         }
         Err(e) => {
-            emit(&app, IntegrationUpdate {
-                id: "integration_stripe",
-                data: json!({}),
-                error: Some(format!("No connection: {e}")),
-                event: None,
-            });
+            emit(
+                &app,
+                IntegrationUpdate {
+                    id: "integration_stripe",
+                    data: json!({}),
+                    error: Some(format!("No connection: {e}")),
+                    event: None,
+                },
+            );
             return;
         }
     };
@@ -246,26 +264,38 @@ async fn poll_stripe(app: AppHandle) {
             .and_then(Value::as_str)
             .map(str::to_string)
             .unwrap_or_else(|| {
-                let cents = payments[0].get("amount").and_then(Value::as_i64).unwrap_or(0);
+                let cents = payments[0]
+                    .get("amount")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
                 format!("{:.2}", cents as f64 / 100.0)
             });
-        Some(IntegrationEvent { success: true, label, detail: None })
+        Some(IntegrationEvent {
+            success: true,
+            label,
+            detail: None,
+        })
     } else {
         None
     };
 
-    emit(&app, IntegrationUpdate {
-        id: "integration_stripe",
-        data: json!({ "balance": amount, "currency": currency, "payments": payments }),
-        error: None,
-        event,
-    });
+    emit(
+        &app,
+        IntegrationUpdate {
+            id: "integration_stripe",
+            data: json!({ "balance": amount, "currency": currency, "payments": payments }),
+            error: None,
+            event,
+        },
+    );
 }
 
 // ── GitHub ────────────────────────────────────────────────────────────────────
 
 async fn poll_github(app: AppHandle) {
-    let Some(token) = secrets::get("github-token") else { return };
+    let Some(token) = secrets::get("github-token") else {
+        return;
+    };
     let http = client();
 
     let user = http
@@ -277,16 +307,25 @@ async fn poll_github(app: AppHandle) {
         .await;
     let Ok(response) = user else { return };
     if !response.status().is_success() {
-        emit(&app, IntegrationUpdate {
-            id: "integration_github",
-            data: json!({}),
-            error: Some(status_error(response.status().as_u16(), "Token lacks the needed scope")),
-            event: None,
-        });
+        emit(
+            &app,
+            IntegrationUpdate {
+                id: "integration_github",
+                data: json!({}),
+                error: Some(status_error(
+                    response.status().as_u16(),
+                    "Token lacks the needed scope",
+                )),
+                event: None,
+            },
+        );
         return;
     }
     let json: Value = response.json().await.unwrap_or(json!({}));
-    let public = json.get("public_repos").and_then(Value::as_i64).unwrap_or(0);
+    let public = json
+        .get("public_repos")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
     let private = json
         .get("owned_private_repos")
         .or_else(|| json.get("total_private_repos"))
@@ -315,18 +354,23 @@ async fn poll_github(app: AppHandle) {
         _ => 0,
     };
 
-    emit(&app, IntegrationUpdate {
-        id: "integration_github",
-        data: json!({ "totalRepos": public + private, "totalStars": stars }),
-        error: None,
-        event: None,
-    });
+    emit(
+        &app,
+        IntegrationUpdate {
+            id: "integration_github",
+            data: json!({ "totalRepos": public + private, "totalStars": stars }),
+            error: None,
+            event: None,
+        },
+    );
 }
 
 // ── Vercel ────────────────────────────────────────────────────────────────────
 
 async fn poll_vercel(app: AppHandle) {
-    let Some(token) = secrets::get("vercel-token") else { return };
+    let Some(token) = secrets::get("vercel-token") else {
+        return;
+    };
     let response = client()
         .get("https://api.vercel.com/v6/deployments?limit=5")
         .header("Authorization", format!("Bearer {token}"))
@@ -335,12 +379,18 @@ async fn poll_vercel(app: AppHandle) {
         .await;
     let Ok(response) = response else { return };
     if !response.status().is_success() {
-        emit(&app, IntegrationUpdate {
-            id: "integration_vercel",
-            data: json!({}),
-            error: Some(status_error(response.status().as_u16(), "Token lacks access")),
-            event: None,
-        });
+        emit(
+            &app,
+            IntegrationUpdate {
+                id: "integration_vercel",
+                data: json!({}),
+                error: Some(status_error(
+                    response.status().as_u16(),
+                    "Token lacks access",
+                )),
+                event: None,
+            },
+        );
         return;
     }
     let json: Value = response.json().await.unwrap_or(json!({}));
@@ -387,18 +437,23 @@ async fn poll_vercel(app: AppHandle) {
         })
     });
 
-    emit(&app, IntegrationUpdate {
-        id: "integration_vercel",
-        data: json!({ "deployments": deployments }),
-        error: None,
-        event,
-    });
+    emit(
+        &app,
+        IntegrationUpdate {
+            id: "integration_vercel",
+            data: json!({ "deployments": deployments }),
+            error: None,
+            event,
+        },
+    );
 }
 
 // ── Resend ────────────────────────────────────────────────────────────────────
 
 async fn poll_resend(app: AppHandle) {
-    let Some(key) = secrets::get("resend-api-key") else { return };
+    let Some(key) = secrets::get("resend-api-key") else {
+        return;
+    };
     let response = client()
         .get("https://api.resend.com/emails?limit=100")
         .header("Authorization", format!("Bearer {key}"))
@@ -407,12 +462,15 @@ async fn poll_resend(app: AppHandle) {
         .await;
     let Ok(response) = response else { return };
     if !response.status().is_success() {
-        emit(&app, IntegrationUpdate {
-            id: "integration_resend",
-            data: json!({}),
-            error: Some(status_error(response.status().as_u16(), "Key lacks access")),
-            event: None,
-        });
+        emit(
+            &app,
+            IntegrationUpdate {
+                id: "integration_resend",
+                data: json!({}),
+                error: Some(status_error(response.status().as_u16(), "Key lacks access")),
+                event: None,
+            },
+        );
         return;
     }
     let json: Value = response.json().await.unwrap_or(json!({}));
@@ -444,18 +502,23 @@ async fn poll_resend(app: AppHandle) {
         })
         .unwrap_or_default();
 
-    emit(&app, IntegrationUpdate {
-        id: "integration_resend",
-        data: json!({ "emails": emails, "total": total }),
-        error: None,
-        event: None,
-    });
+    emit(
+        &app,
+        IntegrationUpdate {
+            id: "integration_resend",
+            data: json!({ "emails": emails, "total": total }),
+            error: None,
+            event: None,
+        },
+    );
 }
 
 // ── Notion ────────────────────────────────────────────────────────────────────
 
 async fn poll_notion(app: AppHandle) {
-    let Some(token) = secrets::get("notion-api-key") else { return };
+    let Some(token) = secrets::get("notion-api-key") else {
+        return;
+    };
     let response = client()
         .post("https://api.notion.com/v1/search")
         .header("Authorization", format!("Bearer {token}"))
@@ -469,12 +532,18 @@ async fn poll_notion(app: AppHandle) {
         .await;
     let Ok(response) = response else { return };
     if !response.status().is_success() {
-        emit(&app, IntegrationUpdate {
-            id: "integration_notion",
-            data: json!({}),
-            error: Some(status_error(response.status().as_u16(), "Integration lacks access")),
-            event: None,
-        });
+        emit(
+            &app,
+            IntegrationUpdate {
+                id: "integration_notion",
+                data: json!({}),
+                error: Some(status_error(
+                    response.status().as_u16(),
+                    "Integration lacks access",
+                )),
+                event: None,
+            },
+        );
         return;
     }
     let json: Value = response.json().await.unwrap_or(json!({}));
@@ -484,12 +553,15 @@ async fn poll_notion(app: AppHandle) {
         .map(|list| list.iter().filter_map(parse_notion_page).collect())
         .unwrap_or_default();
 
-    emit(&app, IntegrationUpdate {
-        id: "integration_notion",
-        data: json!({ "pages": pages }),
-        error: None,
-        event: None,
-    });
+    emit(
+        &app,
+        IntegrationUpdate {
+            id: "integration_notion",
+            data: json!({ "pages": pages }),
+            error: None,
+            event: None,
+        },
+    );
 }
 
 fn parse_notion_page(obj: &Value) -> Option<Value> {
@@ -547,7 +619,9 @@ fn parse_notion_page(obj: &Value) -> Option<Value> {
 // ── Cal.com ───────────────────────────────────────────────────────────────────
 
 async fn poll_calcom(app: AppHandle) {
-    let Some(key) = secrets::get("calcom-api-key") else { return };
+    let Some(key) = secrets::get("calcom-api-key") else {
+        return;
+    };
     let response = client()
         .get("https://api.cal.com/v2/bookings?status=upcoming")
         .header("Authorization", format!("Bearer {key}"))
@@ -556,12 +630,15 @@ async fn poll_calcom(app: AppHandle) {
         .await;
     let Ok(response) = response else { return };
     if !response.status().is_success() {
-        emit(&app, IntegrationUpdate {
-            id: "integration_calcom",
-            data: json!({}),
-            error: Some(status_error(response.status().as_u16(), "Key lacks access")),
-            event: None,
-        });
+        emit(
+            &app,
+            IntegrationUpdate {
+                id: "integration_calcom",
+                data: json!({}),
+                error: Some(status_error(response.status().as_u16(), "Key lacks access")),
+                event: None,
+            },
+        );
         return;
     }
     let json: Value = response.json().await.unwrap_or(json!({}));
@@ -597,21 +674,52 @@ async fn poll_calcom(app: AppHandle) {
         })
         .unwrap_or_default();
 
-    emit(&app, IntegrationUpdate {
-        id: "integration_calcom",
-        data: json!({ "bookings": bookings }),
-        error: None,
-        event: None,
-    });
+    emit(
+        &app,
+        IntegrationUpdate {
+            id: "integration_calcom",
+            data: json!({ "bookings": bookings }),
+            error: None,
+            event: None,
+        },
+    );
 }
 
 // ── n8n ───────────────────────────────────────────────────────────────────────
+
+/// Credentials may travel over HTTP only to literal loopback addresses or the
+/// exact localhost name. Never allow embedded credentials or ambiguous URL bases.
+pub fn validate_n8n_base(raw: &str) -> Result<String, String> {
+    let url = reqwest::Url::parse(raw.trim()).map_err(|_| "Enter a valid n8n URL.".to_string())?;
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("n8n URL must not contain embedded credentials.".into());
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err("n8n URL must not contain a query or fragment.".into());
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| "n8n URL needs a host.".to_string())?;
+    let loopback = host.eq_ignore_ascii_case("localhost")
+        || host
+            .trim_matches(['[', ']'])
+            .parse::<std::net::IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false);
+    if url.scheme() != "https" && !(url.scheme() == "http" && loopback) {
+        return Err("n8n requires HTTPS; HTTP is allowed only on localhost.".into());
+    }
+    Ok(url.as_str().trim_end_matches('/').to_string())
+}
 
 async fn poll_n8n(app: AppHandle) {
     let (Some(key), Some(raw_base)) = (secrets::get("n8n-api-key"), secrets::get("n8n-url")) else {
         return;
     };
-    let base = raw_base.trim_end_matches('/').to_string();
+    let Ok(base) = validate_n8n_base(&raw_base) else {
+        log::line("n8n requires HTTPS (HTTP is allowed only on localhost)");
+        return;
+    };
     let http = client();
 
     // Same two shapes as the Swift poller: the public API first, then /rest.
@@ -622,7 +730,12 @@ async fn poll_n8n(app: AppHandle) {
 
     let mut items: Option<Vec<Value>> = None;
     for url in &list_urls {
-        let Ok(response) = http.get(url).header("X-N8N-API-KEY", &key).header("Accept", "application/json").send().await
+        let Ok(response) = http
+            .get(url)
+            .header("X-N8N-API-KEY", &key)
+            .header("Accept", "application/json")
+            .send()
+            .await
         else {
             continue;
         };
@@ -631,7 +744,9 @@ async fn poll_n8n(app: AppHandle) {
             log::line(format!("n8n list HTTP {}", response.status()));
             continue;
         }
-        let Ok(json) = response.json::<Value>().await else { continue };
+        let Ok(json) = response.json::<Value>().await else {
+            continue;
+        };
         items = match &json {
             Value::Object(o) => o.get("data").and_then(Value::as_array).cloned(),
             Value::Array(a) => Some(a.clone()),
@@ -642,7 +757,9 @@ async fn poll_n8n(app: AppHandle) {
         }
     }
 
-    let Some(first) = items.and_then(|list| list.into_iter().next()) else { return };
+    let Some(first) = items.and_then(|list| list.into_iter().next()) else {
+        return;
+    };
     let id = match first.get("id") {
         Some(Value::String(s)) => s.clone(),
         Some(Value::Number(n)) => n.to_string(),
@@ -667,14 +784,21 @@ async fn poll_n8n(app: AppHandle) {
     let mut name = "Workflow".to_string();
     let mut detail = None;
     for url in &detail_urls {
-        let Ok(response) = http.get(url).header("X-N8N-API-KEY", &key).header("Accept", "application/json").send().await
+        let Ok(response) = http
+            .get(url)
+            .header("X-N8N-API-KEY", &key)
+            .header("Accept", "application/json")
+            .send()
+            .await
         else {
             continue;
         };
         if !response.status().is_success() {
             continue;
         }
-        let Ok(json) = response.json::<Value>().await else { continue };
+        let Ok(json) = response.json::<Value>().await else {
+            continue;
+        };
         name = json
             .get("workflowData")
             .and_then(|w| w.get("name"))
@@ -687,12 +811,19 @@ async fn poll_n8n(app: AppHandle) {
     }
 
     log::line(format!("n8n execution {id} {status} · {name}"));
-    emit(&app, IntegrationUpdate {
-        id: "integration_n8n",
-        data: json!({ "workflow": name, "status": status }),
-        error: None,
-        event: Some(IntegrationEvent { success, label: name, detail }),
-    });
+    emit(
+        &app,
+        IntegrationUpdate {
+            id: "integration_n8n",
+            data: json!({ "workflow": name, "status": status }),
+            error: None,
+            event: Some(IntegrationEvent {
+                success,
+                label: name,
+                detail,
+            }),
+        },
+    );
 }
 
 fn n8n_detail(json: &Value, success: bool) -> Option<String> {
@@ -700,7 +831,11 @@ fn n8n_detail(json: &Value, success: bool) -> Option<String> {
     if !success {
         if let Some(error) = result.get("error") {
             let message = error.get("message").and_then(Value::as_str).unwrap_or("");
-            if let Some(node) = error.get("node").and_then(|n| n.get("name")).and_then(Value::as_str) {
+            if let Some(node) = error
+                .get("node")
+                .and_then(|n| n.get("name"))
+                .and_then(Value::as_str)
+            {
                 if !node.is_empty() {
                     return Some(format!("{node}\n{message}"));
                 }
@@ -734,7 +869,10 @@ fn n8n_detail(json: &Value, success: bool) -> Option<String> {
         .first()?
         .as_array()?;
     let count = items.len();
-    let header = format!("→ {last_node} · {count} item{}", if count == 1 { "" } else { "s" });
+    let header = format!(
+        "→ {last_node} · {count} item{}",
+        if count == 1 { "" } else { "s" }
+    );
 
     let fields = items
         .first()
@@ -761,5 +899,41 @@ fn fmt_value(v: &Value) -> String {
         Value::Array(a) => format!("[{}]", a.len()),
         Value::Object(_) => "{…}".into(),
         other => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn n8n_allows_tls_and_loopback_only_without_embedded_secrets() {
+        for url in [
+            "https://n8n.example.com",
+            "https://n8n.example.com/prefix/",
+            "http://localhost:5678",
+            "http://127.0.0.1:5678",
+            "http://[::1]:5678",
+        ] {
+            assert!(validate_n8n_base(url).is_ok(), "rejected {url}");
+        }
+        for url in [
+            "http://n8n.example.com",
+            "http://192.168.1.2",
+            "http://localhost.evil.example",
+            "https://user:secret@n8n.example.com",
+            "https://user@n8n.example.com",
+            "https://n8n.example.com?key=secret",
+            "https://n8n.example.com#fragment",
+            "file:///etc/passwd",
+            "ftp://localhost",
+            "garbage",
+        ] {
+            assert!(validate_n8n_base(url).is_err(), "accepted {url}");
+        }
+        assert_eq!(
+            validate_n8n_base("https://n8n.example.com/prefix/").unwrap(),
+            "https://n8n.example.com/prefix"
+        );
     }
 }

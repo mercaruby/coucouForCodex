@@ -1,11 +1,11 @@
 // Named-pipe server for coucou-hook.
 //
-// `\\.\pipe\coucou-<sid>` — one instance per connection. Every hook event is
+// `\\.\pipe\coucou-codex-<sid>` — one instance per connection. Every hook event is
 // forwarded to the island as a `hook` event. `PermissionRequest` is the only one
 // that keeps its connection open: it waits for the island's decision and writes
 // it back on the same pipe, which is how approving from the island works.
 //
-// Claude Code is never blocked by us. Three things guarantee it:
+// Codex is never blocked by us. Three things guarantee it:
 //   * coucou-hook gives the connection 300 ms and exits cleanly if we are closed;
 //   * we only wait for a human once the island has *confirmed* the card is on
 //     screen, so a paused island or a webview that is not listening costs a few
@@ -15,11 +15,12 @@
 //
 // What we write back is the bare word `allow` or `deny`. Turning that into the
 // documented hookSpecificOutput JSON is coucou-hook's job, so the wire format
-// Claude Code expects lives in exactly one place.
+// Codex expects lives in exactly one place.
 
 use std::collections::HashMap;
+use std::os::windows::io::AsRawHandle;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -35,7 +36,7 @@ use crate::log;
 const DECISION_TIMEOUT: Duration = Duration::from_secs(108);
 /// How long the island gets to say "the card is up". This is the whole of B4:
 /// without it, an island that is paused, hidden behind a crashed webview or
-/// simply not listening would leave Claude Code staring at a prompt nobody can
+/// simply not listening would leave Codex staring at a prompt nobody can
 /// see for nearly two minutes.
 const ACK_TIMEOUT: Duration = Duration::from_millis(800);
 const MAX_PAYLOAD: usize = 1 << 20;
@@ -60,12 +61,13 @@ static COUNTER: AtomicU64 = AtomicU64::new(1);
 pub fn pipe_name() -> String {
     let key = crate::win_user::current_user_sid()
         .unwrap_or_else(|| std::env::var("USERNAME").unwrap_or_else(|_| "user".into()));
-    format!(r"\\.\pipe\coucou-{key}")
+    format!(r"\\.\pipe\coucou-codex-{key}")
 }
 
 pub fn start(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let name = pipe_name();
+        let connections = Arc::new(tokio::sync::Semaphore::new(32));
         // first_pipe_instance also means we refuse to join a pipe somebody else
         // already owns under our name, rather than serving on top of it.
         let mut server = match ServerOptions::new().first_pipe_instance(true).create(&name) {
@@ -89,32 +91,49 @@ pub fn start(app: AppHandle) {
                 }
             };
             let connected = std::mem::replace(&mut server, next);
+            let Ok(permit) = connections.clone().try_acquire_owned() else {
+                drop(connected);
+                continue;
+            };
             let app = app.clone();
-            tauri::async_runtime::spawn(async move { handle(app, connected).await });
+            tauri::async_runtime::spawn(async move {
+                let _permit = permit;
+                handle(app, connected).await
+            });
         }
     });
 }
 
 async fn handle(app: AppHandle, mut pipe: NamedPipeServer) {
+    let handle = windows::Win32::Foundation::HANDLE(pipe.as_raw_handle());
+    if !crate::win_user::pipe_client_is_same_user(handle) {
+        return;
+    }
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     loop {
-        match pipe.read(&mut chunk).await {
-            Ok(0) => break,
-            Ok(n) => {
+        match tokio::time::timeout_at(deadline, pipe.read(&mut chunk)).await {
+            Ok(Ok(0)) => break,
+            Ok(Ok(n)) => {
                 buf.extend_from_slice(&chunk[..n]);
-                if buf.contains(&b'\n') || buf.len() > MAX_PAYLOAD {
+                if buf.len() > MAX_PAYLOAD {
+                    return;
+                }
+                if buf.contains(&b'\n') {
                     break;
                 }
             }
-            Err(_) => return,
+            _ => return,
         }
     }
     let line = match buf.iter().position(|b| *b == b'\n') {
         Some(i) => &buf[..i],
         None => &buf[..],
     };
-    let Ok(mut payload) = serde_json::from_slice::<Value>(line) else { return };
+    let Ok(mut payload) = serde_json::from_slice::<Value>(line) else {
+        return;
+    };
     if !payload.is_object() {
         return;
     }
@@ -132,7 +151,11 @@ async fn handle(app: AppHandle, mut pipe: NamedPipeServer) {
         return;
     }
 
-    let id = format!("{}-{}", std::process::id(), COUNTER.fetch_add(1, Ordering::Relaxed));
+    let id = format!(
+        "{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
     let (tx, mut rx) = mpsc::channel::<Reply>(4);
     {
         let pending = app.state::<Pending>();
@@ -146,7 +169,7 @@ async fn handle(app: AppHandle, mut pipe: NamedPipeServer) {
     app.state::<Pending>().0.lock().unwrap().remove(&id);
 
     // No decision: say nothing at all. coucou-hook then writes nothing to stdout
-    // and Claude Code asks in the terminal, exactly as if Coucou were closed.
+    // and Codex asks in the terminal, exactly as if Coucou were closed.
     if let Some(d) = decision {
         let _ = pipe.write_all(format!("{d}\n").as_bytes()).await;
         let _ = pipe.flush().await;
@@ -169,7 +192,9 @@ async fn wait_for_decision(id: &str, rx: &mut mpsc::Receiver<Reply>) -> Option<S
         }
         Ok(None) => return None,
         Err(_) => {
-            log::line(format!("hook id={id} island never acknowledged — terminal takes over"));
+            log::line(format!(
+                "hook id={id} island never acknowledged — terminal takes over"
+            ));
             return None;
         }
     }
@@ -194,7 +219,11 @@ fn send(app: &AppHandle, request_id: &str, reply: Reply, keep: bool) {
     let sender = {
         let pending = app.state::<Pending>();
         let mut map = pending.0.lock().unwrap();
-        if keep { map.get(request_id).cloned() } else { map.remove(request_id) }
+        if keep {
+            map.get(request_id).cloned()
+        } else {
+            map.remove(request_id)
+        }
     };
     match sender {
         Some(tx) => {
@@ -216,7 +245,7 @@ pub fn decline(app: &AppHandle, request_id: &str) {
 }
 
 /// Called by the island's Allow / Deny buttons. Only ever a bare word: turning
-/// it into Claude Code's JSON is coucou-hook's job.
+/// it into Codex's JSON is coucou-hook's job.
 pub fn answer(app: &AppHandle, request_id: &str, decision: &str) {
     let word = match decision {
         "allow" | "always" => "allow",

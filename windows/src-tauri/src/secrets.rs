@@ -1,13 +1,13 @@
-// API keys live in the Windows Credential Manager, never on disk and never in
-// the front end — the island can only ask whether a key is present.
+// API keys persist only in Windows Credential Manager. The settings form accepts
+// them temporarily; IPC never returns their stored values to the frontend.
 
 use keyring::Entry;
 
-const SERVICE: &str = "fr.louisraille.coucou";
+const SERVICE: &str = "local.coucou-codex";
 
 /// Every key Coucou may store. Anything outside this list is refused.
 pub const KNOWN_KEYS: &[&str] = &[
-    "anthropic-api-key",
+    "openai-api-key",
     "n8n-url",
     "n8n-api-key",
     "vercel-token",
@@ -30,11 +30,15 @@ pub fn get(key: &str) -> Option<String> {
 }
 
 pub fn set(key: &str, value: &str) -> Result<(), String> {
-    let entry = entry(key).ok_or_else(|| format!("unknown key {key}"))?;
     if value.is_empty() {
-        let _ = entry.delete_credential();
-        return Ok(());
+        return clear(key);
     }
+    if key == "n8n-url" {
+        let url = crate::integrations::validate_n8n_base(value)?;
+        let entry = entry(key).ok_or_else(|| format!("unknown key {key}"))?;
+        return entry.set_password(&url).map_err(|e| e.to_string());
+    }
+    let entry = entry(key).ok_or_else(|| format!("unknown key {key}"))?;
     entry.set_password(value).map_err(|e| e.to_string())
 }
 

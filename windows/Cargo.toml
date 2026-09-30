@@ -1,5 +1,5 @@
 [workspace]
-members = ["src-tauri", "hook"]
+members = ["src-tauri", "hook", "codex-client"]
 resolver = "2"
 
 [workspace.package]

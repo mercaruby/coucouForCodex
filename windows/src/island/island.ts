@@ -127,7 +127,7 @@ export class Island {
           integration_notion: "https://notion.so",
           integration_calcom: "https://app.cal.com/bookings",
         };
-        if (task.id === "integration_claude") void Bridge.openInVSCode(task.sessionCwd ?? null);
+        if (task.id === "integration_codex") void Bridge.openInVSCode(task.sessionCwd ?? null);
         else if (task.id === "integration_n8n") void Bridge.openN8n();
         else if (urls[task.id]) void Bridge.openUrl(urls[task.id]);
       },
@@ -143,26 +143,26 @@ export class Island {
         State.pendingApproval = null;
         State.isPinned = false;
         this.fsm.pinned = false;
-        State.updateTask("integration_claude", "working");
-        State.setPillBadge("integration_claude", null);
+        State.updateTask("integration_codex", "working");
+        State.setPillBadge("integration_codex", null);
         this.setView(State.defaultView());
       },
       toggleSound: () => {
         State.settings.soundEnabled = !State.settings.soundEnabled;
         Sound.setEnabled(State.settings.soundEnabled);
-        void Bridge.saveSettings(State.settings);
+        void this.persistSettings();
         State.notify();
       },
       setVolume: (v) => {
         State.settings.soundVolume = v;
         Sound.setVolume(v);
-        void Bridge.saveSettings(State.settings);
+        void this.persistSettings();
         State.notify();
       },
       setAutoClose: (s) => {
         State.settings.autoCloseInterval = s;
         this.fsm.homeToPetitDelay = s;
-        void Bridge.saveSettings(State.settings);
+        void this.persistSettings();
         State.notify();
       },
       openSettingsWindow: () => void Bridge.openSettingsWindow(),
@@ -388,7 +388,8 @@ export class Island {
     const name = path.split(/[\\/]/).pop() || "file";
     State.droppedFile = { name, path };
     State.promptContext = { kind: "file", name, path };
-    State.chatHistory = [];
+    State.resetChat();
+    const epoch = State.chatEpoch;
     void Bridge.chatReset();
 
     UploadSeq.performDrop(State.uploadDuration);
@@ -406,11 +407,13 @@ export class Island {
 
     void Bridge.ingestFile(path)
       .then((file) => {
+        if (epoch !== State.chatEpoch) return;
         State.droppedFile = { name: file.name, path: file.path };
         State.promptContext = { kind: "file", name: file.name, path: file.path };
         State.notify();
       })
       .catch((err) => {
+        if (epoch !== State.chatEpoch) return;
         UploadSeq.deactivate();
         State.noteMessage = String(err).replace(/^Error:\s*/, "");
         this.engine.animateMorph(0);
@@ -870,6 +873,17 @@ export class Island {
   }
 
   /** Applies settings coming from Rust at boot. */
+  private async persistSettings() {
+    const snapshot = { ...State.settings, activeIntegrations: [...State.settings.activeIntegrations] };
+    try {
+      await Bridge.saveSettings(snapshot);
+    } catch {
+      State.noteMessage = "Could not save preferences. Open Settings and check your settings folder permissions.";
+      this.setView("note");
+      State.notify();
+    }
+  }
+
   applySettings() {
     Sound.setEnabled(State.settings.soundEnabled);
     Sound.setVolume(State.settings.soundVolume);

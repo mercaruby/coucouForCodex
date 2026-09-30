@@ -1,4 +1,4 @@
-// Preferences, stored as plain JSON in %APPDATA%\Coucou\settings.json.
+// Preferences, stored as plain JSON in %APPDATA%\CoucouCodex\settings.json.
 // No secret ever lands here — API keys live in the Windows Credential Manager.
 
 use serde::{Deserialize, Serialize};
@@ -16,14 +16,22 @@ pub struct Settings {
     pub screen: String,
     pub autostart: bool,
     pub hooks_installed: bool,
-    /// Claude model used by the chat. Changeable in the settings window.
+    /// Optional model override. Empty lets Codex choose its server default.
     /// Defaulted explicitly so a settings.json written by an older build still loads.
     #[serde(default = "default_model")]
     pub model: String,
+    #[serde(default = "default_backend")]
+    pub chat_backend: String,
+    #[serde(default)]
+    pub codex_path: String,
 }
 
 fn default_model() -> String {
-    crate::claude::DEFAULT_MODEL.to_string()
+    String::new()
+}
+
+fn default_backend() -> String {
+    "codex".into()
 }
 
 impl Default for Settings {
@@ -43,24 +51,26 @@ impl Default for Settings {
             autostart: false,
             hooks_installed: false,
             model: default_model(),
+            chat_backend: default_backend(),
+            codex_path: String::new(),
         }
     }
 }
 
-/// %APPDATA%\Coucou
+/// %APPDATA%\CoucouCodex
 pub fn config_dir() -> PathBuf {
     let base = std::env::var_os("APPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    base.join("Coucou")
+    base.join("CoucouCodex")
 }
 
-/// %LOCALAPPDATA%\Coucou — where coucou-hook.exe and the log live.
+/// %LOCALAPPDATA%\CoucouCodex — where coucou-hook.exe and the log live.
 pub fn local_dir() -> PathBuf {
     let base = std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    base.join("Coucou")
+    base.join("CoucouCodex")
 }
 
 pub fn hook_exe_path() -> PathBuf {

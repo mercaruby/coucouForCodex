@@ -33,10 +33,10 @@ export async function refreshConfigured() {
     State.integrations[id] = { ...info, configured: present };
   }
   const hooks = State.settings.hooksInstalled;
-  const claude = State.integrations.integration_claude ?? {
+  const codex = State.integrations.integration_codex ?? {
     data: {}, error: null, loaded: false, configured: false,
   };
-  State.integrations.integration_claude = { ...claude, configured: hooks };
+  State.integrations.integration_codex = { ...codex, configured: hooks };
   State.notify();
 }
 

@@ -54,6 +54,9 @@ async function main() {
 
   // The settings window writes preferences; apply them here without a restart.
   await onEvent<Settings>("settings-changed", (s) => {
+    if (State.settings.chatBackend !== s.chatBackend || State.settings.model !== s.model || State.settings.codexPath !== s.codexPath) {
+      State.resetChat();
+    }
     State.settings = { ...State.settings, ...s };
     island.applySettings();
     State.loadIntegrationTasks();

@@ -18,3 +18,10 @@ DerivedData/
 # Local only (never published)
 .claude/
 _prive/
+
+# Local builds and tooling
+windows/node_modules/
+windows/dist/
+windows/target/
+windows/release/
+.tools/

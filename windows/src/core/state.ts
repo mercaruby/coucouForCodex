@@ -3,7 +3,7 @@
 import type { BotEmoteName, BotStateName, IslandMode, IslandViewName } from "./layout";
 import type { EyeShape } from "../mochi/engine";
 
-export type AgentSource = "claudeCode" | "n8n";
+export type AgentSource = "codex" | "n8n";
 export type PillBadge = "approval" | "finished" | "error";
 
 export interface AgentTask {
@@ -58,7 +58,7 @@ const task = (
 
 /** AgentTask.integrationAgents — same ids, names and colours as macOS. */
 export const INTEGRATION_AGENTS: AgentTask[] = [
-  task("integration_claude", "VS Code", "#F5F6F8", "claudeCode"),
+  task("integration_codex", "VS Code", "#F5F6F8", "codex"),
   task("integration_resend", "Resend", "#22C55E", "n8n"),
   task("integration_n8n", "n8n", "#F29B38", "n8n"),
   task("integration_vercel", "Vercel", "#7C5CFF", "n8n"),
@@ -90,8 +90,10 @@ export interface Settings {
   screen: "primary" | "cursor";
   autostart: boolean;
   hooksInstalled: boolean;
-  /** Claude model used by the chat. */
+  /** Optional model ID; empty uses the backend default. */
   model: string;
+  chatBackend: "codex" | "api";
+  codexPath: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -105,7 +107,9 @@ export const DEFAULT_SETTINGS: Settings = {
   screen: "primary",
   autostart: false,
   hooksInstalled: false,
-  model: "claude-opus-5",
+  model: "",
+  chatBackend: "codex",
+  codexPath: "",
 };
 
 type Listener = () => void;
@@ -136,6 +140,8 @@ class AppState {
   noteMessage: string | null = null;
   searchResult: SearchResult | null = null;
   chatHistory: ChatMessage[] = [];
+  /** Discards replies that arrive after a chat reset or backend change. */
+  chatEpoch = 0;
   pendingApproval: ApprovalInfo | null = null;
 
   integrations: Record<string, IntegrationInfo> = {};
@@ -154,6 +160,14 @@ class AppState {
   /** Marks the UI dirty; the island re-renders on the next frame. */
   notify() {
     for (const fn of this.listeners) fn();
+  }
+
+  resetChat() {
+    this.chatEpoch++;
+    this.chatHistory = [];
+    this.stateOverride = null;
+    this.noteMessage = null;
+    this.notify();
   }
 
   get focusTask(): AgentTask | null {
@@ -203,7 +217,7 @@ class AppState {
   loadIntegrationTasks() {
     for (const proto of INTEGRATION_AGENTS) {
       const shouldLoad =
-        proto.id === "integration_claude" || this.settings.activeIntegrations.includes(proto.id);
+        proto.id === "integration_codex" || this.settings.activeIntegrations.includes(proto.id);
       const idx = this.tasks.findIndex((t) => t.id === proto.id);
       if (shouldLoad && idx < 0) this.tasks.push({ ...proto, steps: [] });
       if (!shouldLoad && idx >= 0) this.tasks.splice(idx, 1);
@@ -211,16 +225,16 @@ class AppState {
     // Keep the declared order so pills never shuffle.
     const order = INTEGRATION_AGENTS.map((t) => t.id);
     this.tasks.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
-    if (!this.focusId) this.focusId = "integration_claude";
+    if (!this.focusId) this.focusId = "integration_codex";
     this.notify();
   }
 
   toggleIntegration(id: string) {
-    if (id === "integration_claude") return;
+    if (id === "integration_codex") return;
     const active = this.settings.activeIntegrations;
     if (active.includes(id)) {
       this.settings.activeIntegrations = active.filter((x) => x !== id);
-      if (this.focusId === id) this.focusId = "integration_claude";
+      if (this.focusId === id) this.focusId = "integration_codex";
     } else {
       if (active.length >= 4) return;
       this.settings.activeIntegrations = [...active, id];

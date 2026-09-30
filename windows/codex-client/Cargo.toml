@@ -1,0 +1,12 @@
+[package]
+name = "codex-client"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+serde_json = "1"
+
+[[bin]]
+name = "mock-codex"
+path = "tests/support/mock.rs"

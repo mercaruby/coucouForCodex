@@ -63,6 +63,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     if (!query || sending) return;
     input.value = "";
     sending = true;
+    const epoch = State.chatEpoch;
     Sound.play("send");
 
     State.chatHistory.push({ id: nextId++, role: "user", content: query });
@@ -76,10 +77,12 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
 
     try {
       const reply = await Bridge.chatSend(query, context);
+      if (epoch !== State.chatEpoch) return;
       State.chatHistory.push({ id: nextId++, role: "assistant", content: reply.text });
       State.stateOverride = null;
       Sound.play("finish");
     } catch (err) {
+      if (epoch !== State.chatEpoch) return;
       State.stateOverride = null;
       State.noteMessage = String(err).replace(/^Error:\s*/, "");
       State.view = "note";

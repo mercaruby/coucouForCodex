@@ -6,16 +6,42 @@
 // that the process serving the pipe really is us.
 
 use windows::core::PWSTR;
-use windows::Win32::Foundation::{CloseHandle, HANDLE, HLOCAL, LocalFree};
+use windows::Win32::Foundation::{CloseHandle, LocalFree, HANDLE, HLOCAL};
 use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
-use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+use windows::Win32::System::Pipes::GetNamedPipeClientProcessId;
+use windows::Win32::System::Threading::{
+    GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
+};
 
 /// The SID of the account this process runs as, as `S-1-5-21-…`.
 pub fn current_user_sid() -> Option<String> {
+    unsafe { process_sid(GetCurrentProcess()) }
+}
+
+/// Reject other local accounts before accepting any hook data or approvals.
+pub fn pipe_client_is_same_user(handle: HANDLE) -> bool {
+    let Some(mine) = current_user_sid() else {
+        return false;
+    };
+    unsafe {
+        let mut pid = 0;
+        if GetNamedPipeClientProcessId(handle, &mut pid).is_err() || pid == 0 {
+            return false;
+        }
+        let Ok(process) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+            return false;
+        };
+        let sid = process_sid(process);
+        let _ = CloseHandle(process);
+        sid.as_deref() == Some(mine.as_str())
+    }
+}
+
+unsafe fn process_sid(process: HANDLE) -> Option<String> {
     unsafe {
         let mut token = HANDLE::default();
-        OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).ok()?;
+        OpenProcessToken(process, TOKEN_QUERY, &mut token).ok()?;
 
         // First call sizes the buffer, second fills it.
         let mut needed = 0u32;
