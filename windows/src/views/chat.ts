@@ -66,7 +66,8 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     const epoch = State.chatEpoch;
     Sound.play("send");
 
-    State.chatHistory.push({ id: nextId++, role: "user", content: query });
+    const submittedId = nextId++;
+    State.chatHistory.push({ id: submittedId, role: "user", content: query });
     State.stateOverride = "thinking";
     State.notify();
     onHeightChange();
@@ -83,6 +84,8 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
       Sound.play("finish");
     } catch (err) {
       if (epoch !== State.chatEpoch) return;
+      State.chatHistory = State.chatHistory.filter((message) => message.id !== submittedId);
+      input.value = query;
       State.stateOverride = null;
       State.noteMessage = String(err).replace(/^Error:\s*/, "");
       State.view = "note";

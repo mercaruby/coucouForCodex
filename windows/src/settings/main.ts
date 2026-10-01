@@ -3,7 +3,7 @@
 // integrations land here too in a later stage.
 
 import "./settings.css";
-import { Bridge, onEvent, type HookStatus } from "../core/bridge";
+import { Bridge, onEvent, type HookStatus, type ChatGPTSession, type ChatGPTModel } from "../core/bridge";
 import { DEFAULT_SETTINGS, type Settings } from "../core/state";
 import { h, clear } from "../views/dom";
 
@@ -201,108 +201,192 @@ const MODELS: [string, string][] = [
   ["gpt-5.6-sol", "GPT-5.6 Sol"],
 ];
 
-function codexChatSection(): HTMLElement {
+function chatgptChatSection(): HTMLElement {
   const backend = h("select", { "aria-label": "Chat backend" });
   backend.append(
-    h("option", { value: "codex", text: "Codex · ChatGPT login" }),
+    h("option", { value: "chatgpt", text: "ChatGPT · your connected plan" }),
     h("option", { value: "api", text: "OpenAI API · separate billing" }),
   );
   const hint = h("div", { class: "hint" });
   const model = h("select", { "aria-label": "Chat model" });
-  for (const [id, label] of MODELS) model.append(h("option", { value: id, text: label }));
-  if (!MODELS.some(([id]) => id === settings.model)) {
-    model.append(h("option", { value: settings.model, text: settings.model }));
-  }
-  const modelHint = h("div", { class: "hint" });
-  const path = h("input", {
-    type: "text", placeholder: "Optional absolute path to codex.exe (otherwise PATH)",
-    style: "flex:1 1 auto;min-width:0", autocomplete: "off", spellcheck: "false",
-    "aria-label": "Codex executable path",
-  });
-  const savePath = h("button", { text: "Save path" });
+  const account = h("div", { class: "hint", text: "No ChatGPT account connected." });
+  const connect = h("button", { class: "primary", text: "Continue with ChatGPT" });
+  const cancel = h("button", { text: "Cancel sign-in" });
+  const disconnect = h("button", { class: "danger", text: "Disconnect" });
   const check = h("button", { text: "Check connection" });
+  const manage = h("button", { text: "Manage usage", onclick: () => void Bridge.openUrl("https://chatgpt.com/settings/usage") });
   const feedback = h("div", { role: "status", "aria-live": "polite" });
-  const pathRow = h("div", { class: "row" }, h("label", { text: "Codex executable" }), path, savePath);
-  const connectionRow = h("div", { class: "row" }, check);
-  let statusRevision = 0;
+  const auth = h("div", { style: "display:flex;flex-direction:column;gap:12px" }, account,
+    h("div", { class: "row" }, connect, cancel, disconnect, check, manage),
+    h("div", { class: "hint", text: "Sign-in opens the official OpenAI page in your browser. Review and allow ChatGPT plan usage there. Your password and OAuth tokens never enter this interface. Coucou keeps its own protected connection in Windows Credential Manager." }),
+  );
+  let session: ChatGPTSession | null = null;
+  let models: ChatGPTModel[] = [];
+  let attempt: string | null = null;
+  let revision = 0;
+  let loading = false;
+
+  function showError(error: unknown) {
+    clear(feedback);
+    feedback.append(h("div", { class: "notice err", text: String(error).replace(/^Error:\s*/, "") }));
+  }
+
+  function drawModels() {
+    clear(model);
+    model.append(h("option", { value: "", text: settings.chatBackend === "chatgpt" ? "Default · first available account model" : "Default · GPT-5.6 Sol" }));
+    const choices = settings.chatBackend === "chatgpt"
+      ? models.map((entry) => [entry.slug, entry.displayName] as [string, string])
+      : MODELS.filter(([slug]) => slug);
+    for (const [slug, label] of choices) model.append(h("option", { value: slug, text: label }));
+    if (settings.model && !choices.some(([slug]) => slug === settings.model)) {
+      model.append(h("option", { value: settings.model, text: `${settings.model} · unavailable for this connection`, disabled: true }));
+    }
+    model.value = settings.model;
+    model.disabled = loading || attempt !== null || (settings.chatBackend === "chatgpt" && !session?.sharing);
+  }
 
   updateChatControls = () => {
     backend.value = settings.chatBackend;
-    model.value = settings.model;
-    path.value = settings.codexPath;
-    const codex = settings.chatBackend === "codex";
-    hint.textContent = codex
-      ? "Uses the official Codex CLI. Sign in using codex login with ChatGPT. Coucou does not request or store your ChatGPT password or session tokens. Sending a prompt uses your Codex account limits."
-      : "Sends prompts to OpenAI's API using your optional saved API key. API usage is billed separately from your ChatGPT subscription.";
-    modelHint.textContent = codex
-      ? "Default uses the model available to your Codex account. Changing the backend, executable or model starts a new conversation."
-      : "Default uses gpt-5.6-sol. The model must be available to your API project. Changing the backend or model starts a new conversation.";
-    pathRow.style.display = codex ? "" : "none";
-    connectionRow.style.display = codex ? "" : "none";
+    backend.disabled = loading;
+    const chatgpt = settings.chatBackend === "chatgpt";
+    hint.textContent = chatgpt
+      ? "Use eligible requests from your ChatGPT plan after authorizing this app. Limits and availability depend on your connected account. There is no automatic switch to API billing. Changing the backend or model starts a new conversation."
+      : "Use your saved OpenAI API key. API requests are billed separately from your ChatGPT plan. Choosing this backend is explicit; ChatGPT sign-in never falls back to it.";
+    auth.style.display = chatgpt ? "flex" : "none";
+    account.textContent = session?.connected
+      ? `${session.email ?? "ChatGPT account connected"} · ${session.sharing ? "ChatGPT plan usage allowed" : "ChatGPT plan usage has not been allowed"}`
+      : "No ChatGPT account connected.";
+    connect.textContent = session?.connected ? "Reconnect with ChatGPT" : "Continue with ChatGPT";
+    connect.disabled = loading || attempt !== null;
+    cancel.style.display = attempt ? "" : "none";
+    disconnect.style.display = session?.connected ? "" : "none";
+    disconnect.disabled = loading || attempt !== null;
+    check.disabled = loading || attempt !== null;
+    drawModels();
     updateApiVisibility();
   };
 
-  async function changePreference(change: () => void) {
-    const before = { ...settings };
-    const revision = ++statusRevision;
-    clear(feedback);
-    change();
-    if (!(await save()) && revision === statusRevision) {
-      settings.chatBackend = before.chatBackend;
-      settings.model = before.model;
-      settings.codexPath = before.codexPath;
+  async function refreshConnection(visible = false) {
+    const current = ++revision;
+    loading = true;
+    if (visible) clear(feedback);
+    updateChatControls();
+    try {
+      const nextSession = await Bridge.chatgptSession();
+      const nextModels = nextSession.sharing ? await Bridge.chatgptModels() : [];
+      if (current !== revision) return;
+      session = nextSession;
+      models = nextModels;
+      if (visible) feedback.append(h("div", {
+        class: session.sharing ? "notice ok" : "notice warn",
+        text: session.sharing
+          ? `ChatGPT connection verified. ${models.length} models available. Sending a message will use your connected plan allowance.`
+          : "Continue with ChatGPT and allow plan usage in the official sign-in page before sending a message.",
+      }));
+    } catch (error) {
+      if (current === revision) showError(error);
+    } finally {
+      if (current === revision) { loading = false; updateChatControls(); }
     }
-    if (revision === statusRevision) updateChatControls();
   }
 
-  backend.addEventListener("change", () => {
+  backend.addEventListener("change", async () => {
+    const before = settings.chatBackend;
+    const previousModel = settings.model;
     const selected = backend.value as Settings["chatBackend"];
-    void changePreference(() => { settings.chatBackend = selected; });
-  });
-  model.addEventListener("change", () => {
-    const selected = model.value;
-    void changePreference(() => { settings.model = selected; });
-  });
-  savePath.addEventListener("click", () => {
-    const selected = path.value.trim();
-    if (selected && !/^(?:[A-Za-z]:[\\/]|\\\\)/.test(selected)) {
-      clear(feedback);
-      feedback.append(h("div", { class: "notice err", text: "Use an absolute path to codex.exe or leave this blank to search PATH." }));
-      return;
-    }
-    void changePreference(() => { settings.codexPath = selected; });
-  });
-  check.addEventListener("click", async () => {
-    clear(feedback);
-    if (path.value.trim() !== settings.codexPath) {
-      feedback.append(h("div", { class: "notice warn", text: "Save the executable path before checking the connection." }));
-      return;
-    }
-    const revision = ++statusRevision;
-    check.disabled = true;
+    const current = ++revision;
+    loading = true;
+    updateChatControls();
     try {
-      const status = await Bridge.codexStatus();
-      if (revision !== statusRevision) return;
-      feedback.append(h("div", {
-        class: status.authenticated ? "notice ok" : "notice warn",
-        text: status.authenticated
-          ? `Codex is signed in. Executable: ${status.executable}`
-          : "Codex is available but is not signed in with ChatGPT. Run codex login in a terminal, then check again.",
-      }));
-    } catch (err) {
-      if (revision !== statusRevision) return;
-      feedback.append(h("div", { class: "notice err", text: String(err).replace(/^Error:\s*/, "") }));
+      if (selected === "api" && attempt) {
+        const cancelledAttempt = attempt;
+        await Bridge.chatgptLoginCancel(cancelledAttempt);
+        if (attempt === cancelledAttempt) attempt = null;
+      }
+      settings.chatBackend = selected;
+      settings.model = "";
+      if (!(await save()) && current === revision) {
+        settings.chatBackend = before;
+        settings.model = previousModel;
+      }
+    } catch (error) { if (current === revision) showError(error); }
+    finally { if (current === revision) { loading = false; updateChatControls(); } }
+    if (current === revision && settings.chatBackend === "chatgpt") void refreshConnection();
+  });
+  model.addEventListener("change", async () => {
+    const before = settings.model;
+    settings.model = model.value;
+    if (!(await save())) settings.model = before;
+    updateChatControls();
+  });
+  check.addEventListener("click", () => void refreshConnection(true));
+  connect.addEventListener("click", async () => {
+    const current = ++revision;
+    clear(feedback);
+    loading = true;
+    updateChatControls();
+    let ownAttempt: string | null = null;
+    try {
+      const started = await Bridge.chatgptLoginStart();
+      ownAttempt = started.attemptId;
+      attempt = ownAttempt;
+      loading = false;
+      feedback.append(h("div", { class: "notice warn", text: "Complete sign-in and review ChatGPT plan usage in your browser. This window is waiting for OpenAI's callback." }));
+      updateChatControls();
+      const next = await Bridge.chatgptLoginFinish(ownAttempt);
+      if (attempt !== ownAttempt) return;
+      attempt = null;
+      session = next;
+      clear(feedback);
+      feedback.append(h("div", { class: next.sharing ? "notice ok" : "notice warn", text: next.sharing
+        ? "ChatGPT connected. This app can use your approved plan allowance."
+        : "Account connected. ChatGPT plan usage was not granted; reconnect and review the requested permission to use chat." }));
+      await refreshConnection();
+    } catch (error) {
+      if (ownAttempt === null || attempt === ownAttempt) showError(error);
     } finally {
-      check.disabled = false;
+      if (current === revision) {
+        if (ownAttempt === null || attempt === ownAttempt) attempt = null;
+        loading = false;
+        updateChatControls();
+      }
     }
+  });
+  cancel.addEventListener("click", async () => {
+    const current = attempt;
+    if (!current) return;
+    cancel.disabled = true;
+    try {
+      await Bridge.chatgptLoginCancel(current);
+      attempt = null;
+      ++revision;
+      loading = false;
+      clear(feedback);
+      feedback.append(h("div", { class: "notice warn", text: "Sign-in cancelled." }));
+    } catch (error) { showError(error); }
+    finally { cancel.disabled = false; updateChatControls(); }
+  });
+  disconnect.addEventListener("click", async () => {
+    loading = true;
+    updateChatControls();
+    try {
+      await Bridge.chatgptLogout();
+      clear(feedback);
+      feedback.append(h("div", { class: "notice ok", text: "ChatGPT disconnected. The app's registration is retained for reconnecting." }));
+    } catch (error) { showError(error); }
+    finally { loading = false; await refreshConnection(); }
+  });
+  void onEvent<ChatGPTSession>("chatgpt-session-changed", (next) => {
+    session = next;
+    models = [];
+    updateChatControls();
+    if (!attempt && !loading) void refreshConnection();
   });
   updateChatControls();
-  return h("section", {},
-    h("h2", {}, h("span", { text: "Chat" })),
-    h("div", { class: "row" }, h("label", { text: "Backend" }), backend),
-    hint,
-    h("div", { class: "row" }, h("label", { text: "Model" }), model),
-    modelHint, pathRow, connectionRow, feedback,
+  void refreshConnection();
+  return h("section", {}, h("h2", { text: "Chat" }),
+    h("div", { class: "row" }, h("label", { text: "Backend" }), backend), hint, auth,
+    h("div", { class: "row" }, h("label", { text: "Model" }), model), feedback,
   );
 }
 
@@ -563,7 +647,7 @@ async function main() {
   root.append(
     h("h1", {}, h("span", { text: "Coucou" }), h("span", { class: "version", text: version })),
     codexSection(status),
-    codexChatSection(),
+    chatgptChatSection(),
     apiSection(hasKey),
     integrationsSection(present),
     generalSection(),

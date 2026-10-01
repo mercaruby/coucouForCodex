@@ -463,7 +463,7 @@ function buildSettings(actions: ViewActions): ViewHost {
         h("span", { text: "Codex" }),
       );
       clear(apiBadge);
-      apiBadge.append(h("span", { text: s.chatBackend === "codex" ? "Chat · Codex" : "Chat · OpenAI API" }));
+      apiBadge.append(h("span", { text: s.chatBackend === "chatgpt" ? "Chat · ChatGPT" : "Chat · OpenAI API" }));
     },
   };
 }

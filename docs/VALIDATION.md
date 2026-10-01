@@ -1,5 +1,7 @@
 # Windows validation — 1 October 2026
 
+Historical phase-one report, before native Sign in with ChatGPT was implemented. The current subscription backend and its acceptance evidence are documented in [VALIDATION-OAUTH.md](VALIDATION-OAUTH.md). The old app-server compatibility restriction below describes the superseded prototype, not the native OAuth backend.
+
 Base commit: `Louis-CFM/coucou@5ae7bd946ab51493b5ddaebdc5f449f269ebb421`.
 
 The comparison fork was reviewed at `iiZo7al/coucou-chatgpt@5b4ec94cc32684536e38a9b5bbfabe1bdf4ce43d`. This adaptation starts from the original rather than inheriting the entire external fork.

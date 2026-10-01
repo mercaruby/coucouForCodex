@@ -53,6 +53,7 @@ async function main() {
   await onEvent<null>("screen-changed", () => void Bridge.reposition());
 
   // The settings window writes preferences; apply them here without a restart.
+  await onEvent<null>("chat-reset", () => State.resetChat());
   await onEvent<Settings>("settings-changed", (s) => {
     if (State.settings.chatBackend !== s.chatBackend || State.settings.model !== s.model || State.settings.codexPath !== s.codexPath) {
       State.resetChat();

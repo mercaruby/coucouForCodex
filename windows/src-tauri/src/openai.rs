@@ -63,7 +63,11 @@ impl Chat {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum ChatContext {
     File {
         name: String,
@@ -198,7 +202,7 @@ async fn call(key: &str, body: &Value) -> Result<Value, String> {
     serde_json::from_str(&text).map_err(|e| format!("Bad API response: {e}"))
 }
 
-fn file_block(name: &str, path: &str) -> Result<Value, String> {
+pub(crate) fn file_block(name: &str, path: &str) -> Result<Value, String> {
     let path = crate::files::checked_inbox_path(path)?;
     let path = path.to_str().ok_or("Attachment path cannot be encoded.")?;
     if std::fs::metadata(path)
@@ -281,8 +285,28 @@ fn base64(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{base64, extract_output_text, Chat};
+    use super::{base64, extract_output_text, Chat, ChatContext};
     use serde_json::json;
+    #[test]
+    fn submitted_window_context_matches_the_frontend_contract() {
+        let context: ChatContext = serde_json::from_value(json!({
+            "kind":"window","appName":"Browser","title":"Submitted page",
+            "url":"https://example.com/page"
+        }))
+        .unwrap();
+        match context {
+            ChatContext::Window {
+                app_name,
+                title,
+                url,
+            } => {
+                assert_eq!(app_name, "Browser");
+                assert_eq!(title, "Submitted page");
+                assert_eq!(url.as_deref(), Some("https://example.com/page"));
+            }
+            _ => panic!("Expected the submitted window context."),
+        }
+    }
     #[test]
     fn reset_invalidates_requests_started_before_it() {
         let chat = Chat::default();

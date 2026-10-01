@@ -92,7 +92,7 @@ export interface Settings {
   hooksInstalled: boolean;
   /** Optional model ID; empty uses the backend default. */
   model: string;
-  chatBackend: "codex" | "api";
+  chatBackend: "chatgpt" | "api";
   codexPath: string;
 }
 
@@ -108,7 +108,7 @@ export const DEFAULT_SETTINGS: Settings = {
   autostart: false,
   hooksInstalled: false,
   model: "",
-  chatBackend: "codex",
+  chatBackend: "chatgpt",
   codexPath: "",
 };
 

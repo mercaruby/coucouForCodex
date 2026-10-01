@@ -82,7 +82,12 @@ export const Bridge = {
   /** One chat turn. The API key and any file bytes never leave Rust. */
   chatSend: (query: string, context: ChatContext | null) =>
     callOrThrow<{ text: string }>("chat_send", { query, context }),
-  codexStatus: () => callOrThrow<{ authenticated: boolean; executable: string }>("codex_status"),
+  chatgptSession: () => callOrThrow<ChatGPTSession>("chatgpt_session"),
+  chatgptModels: () => callOrThrow<ChatGPTModel[]>("chatgpt_models"),
+  chatgptLoginStart: () => callOrThrow<{ attemptId: string }>("chatgpt_login_start"),
+  chatgptLoginFinish: (attemptId: string) => callOrThrow<ChatGPTSession>("chatgpt_login_finish", { attemptId }),
+  chatgptLoginCancel: (attemptId: string) => callOrThrow<void>("chatgpt_login_cancel", { attemptId }),
+  chatgptLogout: () => callOrThrow<void>("chatgpt_logout"),
   chatReset: () => call<void>("chat_reset"),
   /** Copies a dropped file into the inbox. */
   ingestFile: (path: string) => callOrThrow<DroppedFile>("ingest_file", { path }),
@@ -105,6 +110,20 @@ export interface IntegrationUpdate {
   data: Record<string, unknown>;
   error: string | null;
   event: { success: boolean; label: string; detail: string | null } | null;
+}
+
+export interface ChatGPTSession {
+  connected: boolean;
+  sharing: boolean;
+  email: string | null;
+  subject: string | null;
+  clientId: string | null;
+  generation: number;
+}
+
+export interface ChatGPTModel {
+  slug: string;
+  displayName: string;
 }
 
 export type ChatContext =

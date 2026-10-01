@@ -1,13 +1,26 @@
 # Personal Codex companion — Windows source fork
 
-This personal source fork adapts [Louis-CFM/coucou](https://github.com/Louis-CFM/coucou) for **Codex notifications, explicit approvals and OpenAI chat on Windows**. It does not require Claude. The macOS directory remains upstream Claude code; it is not migrated or verified for Codex.
+This personal source fork adapts [Louis-CFM/coucou](https://github.com/Louis-CFM/coucou) for **Codex monitoring and official Sign in with ChatGPT on Windows**. Claude is not required. The macOS directory remains upstream Claude code; it is not migrated or verified for this integration.
 
-## Capabilities
+## ChatGPT plan chat
 
-- Codex lifecycle hooks use `$CODEX_HOME/hooks.json` (default `~/.codex/hooks.json`), a separate local pipe and explicit Allow/Deny buttons for recognised, fully displayed shell requests. Unknown, oversized or ambiguous requests stay in the official terminal. After installation, review and trust the commands with `/hooks` in the official CLI. The island shows the latest session in an aggregated card, not a separate card per concurrent chat.
-- API chat uses the official Responses endpoint, `store: false` and a separate Credential Manager service. API billing is independent of ChatGPT subscriptions. Default model is `gpt-5.6-sol`, subject to project access.
-- ChatGPT session chat uses the official local `codex app-server` over stdin/stdout. This app never reads `auth.json`, copies OAuth tokens or accepts your ChatGPT password. **It rejects CLIs whose generated schema cannot restrict file reads. The official npm CLI 0.159.2 inspected during development lacks that capability and is blocked.** No successful authenticated inference is claimed. Choose API mode for chat with that runtime; observing hooks needs no API key.
-- ChatGPT mode supports UTF-8 attachments up to 200 KB. API mode also supports images/PDFs up to 20 MB. Attachments are copied to the inbox and sent to OpenAI when submitted. Do not attach secrets.
+Choose **ChatGPT plan** in Settings and **Continue with ChatGPT**. Your system browser opens OpenAI's official authorization page. Select your account/workspace and review permission to use your ChatGPT plan. OpenAI registers this local app during consent; no API key or client secret is required. [Official integration](https://developers.openai.com/cookbook/articles/sign-in-with-chatgpt).
+
+The native Rust client owns this app's OAuth registration. It validates PKCE, state, nonce and signed identity claims, and keeps credentials in a separate Windows Credential Manager service. It does not import Codex's auth.json, browser cookies or another app's tokens. Tokens never return to the webview.
+
+Chat uses the public Responses API directly, with store:false, streaming and no tools. The model cannot run local commands, browse local files, use MCP/plugins or inherit Codex configuration. The app sends the messages and attachments you submit. Models come from the connected account; success requires a completed stream. Limits or declined consent remain errors and never switch to API billing.
+
+Identity sign-in alone does not grant plan usage. Your account must grant that scope and meet OpenAI's current plan/workspace eligibility. Settings provides **Manage usage**. Provider policies still apply to submitted content; store:false does not remove every retention policy. See [plan usage](https://developers.openai.com/siwc/token-sharing-open-source).
+
+The optional **OpenAI API** backend is a separate explicit choice with its own key and project billing. A ChatGPT subscription does not supply that key. Its default model is gpt-5.6-sol, subject to project access.
+
+## Codex monitoring and approvals
+
+Lifecycle hooks use $CODEX_HOME/hooks.json (default ~/.codex/hooks.json), a separate per-user pipe, and explicit Allow/Deny buttons for recognised shell requests whose arguments can be displayed completely. Unknown, oversized or ambiguous requests stay in the official terminal. The island shows the latest session in an aggregated card.
+
+Inspect the installation diff in Settings before applying it. Installation backs up existing files, refuses corrupt settings and stale previews, and preserves other handlers in mixed groups. Then review and trust the exact definitions with /hooks in the official Codex CLI. Chat authentication and hook monitoring are independent; installing hooks does not import a login or grant permissions automatically.
+
+Attachments are copied to the inbox. Text is limited to 200 KB; inline images/PDFs to 20 MB and the selected model's capabilities. Submit only content you intend to send to OpenAI. Clearing chat, changing backend/model or changing the OAuth connection invalidates pending replies.
 
 ## Build locally
 
@@ -22,20 +35,22 @@ cargo test --workspace --locked
 cargo build --release -p coucou --features tauri/custom-protocol --locked
 ```
 
-The standalone application is `windows/target/release/coucou.exe`; keep `coucou-hook.exe` beside it. `npm run tauri dev` runs the native development app. CI checks builds/tests and does not publish installers or binary artifacts. Do not download the Claude app from the upstream releases expecting this adaptation.
+The standalone app is windows/target/release/coucou.exe; keep coucou-hook.exe beside it. npm run tauri dev runs the development app. CI checks builds/tests and does not publish installers or binaries. Upstream Claude releases do not contain this adaptation.
 
-## Setup and security
+For an optional local acceptance check, close Coucou first and run `cargo run -p coucou --example subscription_smoke --locked` from `windows`. This opens official consent if needed and sends one brief request using the connected plan. It prints only public result flags and model metadata; it does not print tokens or account details. Do not run it alongside the desktop app because both use the same protected registration.
 
-Open the tray menu → Settings. Install hooks only after inspecting the diff; the installer backs up existing files, refuses corrupt settings and stale previews, and preserves other handlers within mixed groups. It never edits Claude settings. Review the new definitions through `/hooks` in the official CLI.
+## Security and validation
 
-Choose ChatGPT session or API explicitly. For ChatGPT, sign in through the official CLI and select its absolute native `codex.exe` path if absent from PATH, then Check connection. `.cmd` wrappers are not executed. Older CLIs show a compatibility error. For API, use a separate limited project key and monitor usage; only then enable integrations you need. Remote n8n requires HTTPS.
+Preferences, inbox, log, pipe and credential namespaces are isolated from upstream. OAuth uses fixed official HTTPS origins, rejects redirects and inherited HTTP proxies, confines callbacks to loopback, bounds inputs and rejects incomplete results. Hook IPC verifies the Windows user identity and limits messages, connections and waiting time. Remote n8n requires HTTPS; integrations need their own configured credentials.
 
-Preferences, inbox, log, pipe and credential service are isolated from upstream. API keys never return through IPC; raw authentication errors are not forwarded because they may echo keys. Chat history stays in this app's memory. Clearing chat or switching backend/model invalidates pending replies. Local IPC verifies the user's identity, bounds messages/connections and times out stalled senders. This does not protect against malware already running as your account. The official app-server inherits your Codex configuration, including configured integrations, which still requires your review.
+These controls do not protect against malware or administrators already acting as your Windows account, a compromised browser/OS or an upstream provider compromise. No review guarantees zero risk. The model has no automatic path to unsubmitted local data in subscription chat.
 
-See [comparison review](docs/REVIEW.md) and [validation](docs/VALIDATION.md). Builds and fixture tests do not certify future dependencies, downloaded installers or every Codex version. No production keys or paid inference were used in development.
+See [research](docs/RESEARCH-OAUTH.md), [security acceptance](docs/SECURITY-OAUTH.md), [independent OAuth validation](docs/VALIDATION-OAUTH.md), [original/fork comparison](docs/REVIEW.md) and [delivery plan](docs/DELIVERY-PLAN.md). Fixture tests, builds and actual consent/inference are separate evidence. Consult validation for what has actually run.
+
+If the protected ChatGPT profile is damaged, chat stops while Codex monitoring remains available. Follow the recovery instructions in [security acceptance](docs/SECURITY-OAUTH.md); do not paste credentials into an issue or chat.
 
 ## License and attribution
 
-Code stays [MIT](LICENSE); upstream copyright is preserved. The initial Responses conversion uses MIT-licensed work from [iiZo7al/coucou-chatgpt](https://github.com/iiZo7al/coucou-chatgpt), with integration and security fixes added here.
+Code stays [MIT](LICENSE); upstream copyright is preserved. The initial API conversion uses MIT-licensed work from [iiZo7al/coucou-chatgpt](https://github.com/iiZo7al/coucou-chatgpt), with integration and security fixes. SIWC applies the published protocol with cryptographic libraries; the separately licensed official devkit is not copied or bundled.
 
-Upstream names, character, icons, sounds and media have separate restrictions in [LICENSE-ASSETS.md](LICENSE-ASSETS.md). This is a personal source fork, not an independently branded app release. Replace restricted assets or obtain written permission before distributing derived binaries. No binaries are published here.
+Names, character, icons, sounds and media retain restrictions in [LICENSE-ASSETS.md](LICENSE-ASSETS.md). This is a personal source fork. Replace restricted assets or obtain written permission before distributing derived binaries. No binaries are published here.

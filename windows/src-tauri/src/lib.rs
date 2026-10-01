@@ -1,12 +1,12 @@
 // Coucou for Windows — app wiring and the commands the island calls.
 
-mod openai;
-mod codex;
+mod chatgpt;
 mod files;
 mod hooks;
 mod integrations;
 mod island;
 mod log;
+mod openai;
 mod pipe;
 mod secrets;
 mod settings;
@@ -20,14 +20,30 @@ use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
-use tauri_plugin_autostart::{ManagerExt, MacosLauncher};
+use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
-use openai::{Chat, ChatContext, ChatReply};
 use files::DroppedFile;
 use hooks::{HookPreview, HookStatus};
 use island::{PollGate, ScreenInfo};
+use openai::{Chat, ChatContext, ChatReply};
 use pipe::Pending;
 use settings::Settings;
+
+/// A credential-store failure disables subscription chat without preventing
+/// local Codex monitoring. No credential or internal OAuth state crosses IPC.
+struct Subscription(Result<Arc<chatgpt_client::Manager>, String>);
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LoginAttempt {
+    attempt_id: String,
+}
+
+impl Subscription {
+    fn manager(&self) -> Result<Arc<chatgpt_client::Manager>, String> {
+        self.0.clone()
+    }
+}
 
 /// Keeps spawned helpers from flashing a console window.
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -61,11 +77,17 @@ fn boot(app: AppHandle, shared: State<Shared>) -> BootInfo {
 }
 
 #[tauri::command]
-fn save_settings(app: AppHandle, shared: State<Shared>, chat: State<Chat>, settings: Settings) -> Result<(), String> {
-    if !matches!(settings.chat_backend.as_str(), "codex" | "api") {
-        return Err("Choose Codex or OpenAI API as the chat backend.".into());
+fn save_settings(
+    app: AppHandle,
+    shared: State<Shared>,
+    chat: State<Chat>,
+    settings: Settings,
+) -> Result<(), String> {
+    if !matches!(settings.chat_backend.as_str(), "chatgpt" | "api") {
+        return Err("Choose ChatGPT plan or OpenAI API as the chat backend.".into());
     }
-    if !settings.codex_path.is_empty() && !std::path::Path::new(&settings.codex_path).is_absolute() {
+    if !settings.codex_path.is_empty() && !std::path::Path::new(&settings.codex_path).is_absolute()
+    {
         return Err("Codex executable path must be absolute.".into());
     }
     if settings.model.chars().any(char::is_whitespace) || settings.model.len() > 128 {
@@ -76,7 +98,10 @@ fn save_settings(app: AppHandle, shared: State<Shared>, chat: State<Chat>, setti
         settings::save(&settings).map_err(|_| "Could not save settings to disk.".to_string())?;
         let screen_changed = current.screen != settings.screen;
         let autostart_changed = current.autostart != settings.autostart;
-        if current.chat_backend != settings.chat_backend || current.model != settings.model || current.codex_path != settings.codex_path {
+        if current.chat_backend != settings.chat_backend
+            || current.model != settings.model
+            || current.codex_path != settings.codex_path
+        {
             chat.reset();
         }
         *current = settings.clone();
@@ -84,7 +109,11 @@ fn save_settings(app: AppHandle, shared: State<Shared>, chat: State<Chat>, setti
     };
     if autostart_changed {
         let manager = app.autolaunch();
-        let result = if settings.autostart { manager.enable() } else { manager.disable() };
+        let result = if settings.autostart {
+            manager.enable()
+        } else {
+            manager.disable()
+        };
         if let Err(err) = result {
             eprintln!("[coucou] autostart: {err}");
         }
@@ -114,12 +143,19 @@ fn set_collapsed(app: AppHandle, shared: State<Shared>, collapsed: bool) {
 /// The front end pushes the island shape; Rust decides click-through from it.
 #[tauri::command]
 fn set_island_rect(shared: State<Shared>, x: f64, y: f64, width: f64, height: f64) {
-    shared.gate.set_rect(island::IslandRect { x, y, w: width, h: height });
+    shared.gate.set_rect(island::IslandRect {
+        x,
+        y,
+        w: width,
+        h: height,
+    });
 }
 
 #[tauri::command]
 fn focus_window(app: AppHandle, focused: bool) {
-    let Some(win) = island::window(&app) else { return };
+    let Some(win) = island::window(&app) else {
+        return;
+    };
     island::set_activating(&win, focused);
     if focused {
         let _ = win.set_focus();
@@ -257,6 +293,7 @@ fn approval_decline(app: AppHandle, request_id: String) {
 async fn chat_send(
     shared: State<'_, Shared>,
     chat: State<'_, Chat>,
+    subscription: State<'_, Subscription>,
     query: String,
     context: Option<ChatContext>,
 ) -> Result<ChatReply, String> {
@@ -265,12 +302,18 @@ async fn chat_send(
         (prefs.clone(), chat.request())
     };
     match prefs.chat_backend.as_str() {
-        "codex" => {
-            tauri::async_runtime::spawn_blocking(move || codex::send(&request_chat, &prefs, query, context))
-                .await.map_err(|_| "Codex worker failed".to_string())?
+        "chatgpt" => {
+            let manager = subscription.manager()?;
+            tauri::async_runtime::spawn_blocking(move || {
+                chatgpt::send(&manager, &request_chat, &prefs.model, query, context)
+            })
+            .await
+            .map_err(|_| "ChatGPT worker failed.".to_string())?
         }
         "api" => openai::send(&request_chat, &prefs.model, query, context).await,
-        _ => Err("Unknown chat backend. Open Settings and choose Codex or OpenAI API.".into()),
+        _ => {
+            Err("Unknown chat backend. Open Settings and choose ChatGPT plan or OpenAI API.".into())
+        }
     }
 }
 
@@ -328,7 +371,8 @@ fn log_line(message: String) {
 /// for the *same* arguments as the island (see `additionalBrowserArgs` in
 /// tauri.conf.json) — a mismatch makes the second window come up blank, with no
 /// error anywhere.
-const BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI --autoplay-policy=no-user-gesture-required";
+const BROWSER_ARGS: &str =
+    "--disable-features=msWebOOUI,msPdfOOUI --autoplay-policy=no-user-gesture-required";
 
 /// In a dev build the pages are served by Vite, so the second window needs the
 /// absolute dev URL; a bundled build resolves it inside the app bundle.
@@ -387,11 +431,132 @@ fn open_settings_window(app: AppHandle) {
     show_settings_window(&app);
 }
 
+fn reset_subscription_chat(app: &AppHandle, chat: &Chat) {
+    chat.reset();
+    let _ = app.emit("chat-reset", ());
+}
+
+/// Open only the native client's freshly generated official authorization URL.
+/// ShellExecute uses the registered browser; no shell or PATH lookup is involved.
+fn open_authorization_url(url: &str) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(url).map_err(|_| "Invalid OpenAI sign-in URL.")?;
+    if parsed.scheme() != "https"
+        || parsed.host_str() != Some("auth.openai.com")
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.fragment().is_some()
+        || parsed.port_or_known_default() != Some(443)
+    {
+        return Err("Invalid OpenAI sign-in URL.".into());
+    }
+    use windows::core::PCWSTR;
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let target: Vec<u16> = url.encode_utf16().chain(std::iter::once(0)).collect();
+    let action: Vec<u16> = "open".encode_utf16().chain(std::iter::once(0)).collect();
+    let result = unsafe {
+        ShellExecuteW(
+            None,
+            PCWSTR(action.as_ptr()),
+            PCWSTR(target.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    if result.0 as isize <= 32 {
+        return Err("Could not open the browser for OpenAI sign-in.".into());
+    }
+    Ok(())
+}
+
 #[tauri::command]
-async fn codex_status(shared: State<'_ , Shared>) -> Result<codex::Status, String> {
-    let prefs = shared.settings.lock().unwrap().clone();
-    tauri::async_runtime::spawn_blocking(move || codex::status(&prefs))
-        .await.map_err(|_| "Codex worker failed".to_string())?
+async fn chatgpt_login_start(
+    app: AppHandle,
+    chat: State<'_, Chat>,
+    subscription: State<'_, Subscription>,
+) -> Result<LoginAttempt, String> {
+    reset_subscription_chat(&app, &chat);
+    let manager = subscription.manager()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let start = manager.begin_login()?;
+        if let Err(err) = open_authorization_url(&start.auth_url) {
+            let _ = manager.cancel_login(&start.attempt_id);
+            return Err(err);
+        }
+        Ok(LoginAttempt {
+            attempt_id: start.attempt_id,
+        })
+    })
+    .await
+    .map_err(|_| "OpenAI sign-in worker failed.".to_string())?
+}
+
+#[tauri::command]
+async fn chatgpt_login_finish(
+    app: AppHandle,
+    chat: State<'_, Chat>,
+    subscription: State<'_, Subscription>,
+    attempt_id: String,
+) -> Result<chatgpt_client::Session, String> {
+    let manager = subscription.manager()?;
+    let worker = manager.clone();
+    let session = tauri::async_runtime::spawn_blocking(move || worker.finish_login(&attempt_id))
+        .await
+        .map_err(|_| "OpenAI sign-in worker failed.".to_string())??;
+    if manager.session().generation != session.generation {
+        return Err("The ChatGPT connection changed during sign-in.".into());
+    }
+    reset_subscription_chat(&app, &chat);
+    let _ = app.emit("chatgpt-session-changed", &session);
+    Ok(session)
+}
+
+#[tauri::command]
+async fn chatgpt_login_cancel(
+    app: AppHandle,
+    chat: State<'_, Chat>,
+    subscription: State<'_, Subscription>,
+    attempt_id: String,
+) -> Result<(), String> {
+    reset_subscription_chat(&app, &chat);
+    let manager = subscription.manager()?;
+    tauri::async_runtime::spawn_blocking(move || manager.cancel_login(&attempt_id))
+        .await
+        .map_err(|_| "OpenAI sign-in worker failed.".to_string())?
+}
+
+#[tauri::command]
+fn chatgpt_session(subscription: State<Subscription>) -> Result<chatgpt_client::Session, String> {
+    Ok(subscription.manager()?.session())
+}
+
+#[tauri::command]
+async fn chatgpt_models(
+    subscription: State<'_, Subscription>,
+) -> Result<Vec<chatgpt_client::Model>, String> {
+    let manager = subscription.manager()?;
+    tauri::async_runtime::spawn_blocking(move || manager.models())
+        .await
+        .map_err(|_| "ChatGPT model worker failed.".to_string())?
+}
+
+#[tauri::command]
+async fn chatgpt_logout(
+    app: AppHandle,
+    chat: State<'_, Chat>,
+    subscription: State<'_, Subscription>,
+) -> Result<(), String> {
+    reset_subscription_chat(&app, &chat);
+    let manager = subscription.manager()?;
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = manager.logout();
+        let _ = app.emit("chatgpt-session-changed", manager.session());
+        result
+    })
+    .await
+    .map_err(|_| "ChatGPT sign-out worker failed.".to_string())?
 }
 
 pub fn run() {
@@ -402,13 +567,17 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             let _ = app.emit_to(island::WINDOW_LABEL, "tray", "open".to_string());
         }))
-        .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::LaunchAgent,
+            None,
+        ))
         .manage(Shared {
             settings: Mutex::new(loaded.clone()),
             gate: gate.clone(),
         })
         .manage(Pending::default())
         .manage(Chat::default())
+        .manage(Subscription(chatgpt_client::Manager::new().map(Arc::new)))
         .invoke_handler(tauri::generate_handler![
             boot,
             save_settings,
@@ -428,7 +597,12 @@ pub fn run() {
             log_line,
             chat_send,
             chat_reset,
-            codex_status,
+            chatgpt_login_start,
+            chatgpt_login_finish,
+            chatgpt_login_cancel,
+            chatgpt_session,
+            chatgpt_models,
+            chatgpt_logout,
             ingest_file,
             secret_present,
             secret_set,
@@ -453,7 +627,10 @@ pub fn run() {
             gate.set_active(true);
             island::spawn_cursor_poll(handle.clone(), gate.clone());
 
-            log::line(format!("--- Coucou {} started ---", env!("CARGO_PKG_VERSION")));
+            log::line(format!(
+                "--- Coucou {} started ---",
+                env!("CARGO_PKG_VERSION")
+            ));
             hooks::ensure_hook_exe(&handle);
             pipe::start(handle.clone());
             integrations::start(handle.clone());

@@ -52,7 +52,7 @@
     "copyright": "© Louis Raille",
     "category": "DeveloperTool",
     "shortDescription": "Mochi lives at the top of your screen",
-    "longDescription": "Personal Windows adaptation for Codex session notifications, explicit approvals and OpenAI chat. ChatGPT session chat requires a compatible official Codex runtime; API billing is separate.",
+    "longDescription": "Personal Windows adaptation for Codex session notifications, explicit approvals and chat through official Sign in with ChatGPT. Eligible requests use the connected ChatGPT plan; the optional OpenAI API backend has separate billing.",
     "windows": {
       "nsis": {
         "installMode": "currentUser",

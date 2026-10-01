@@ -16,7 +16,8 @@ pub struct Settings {
     pub screen: String,
     pub autostart: bool,
     pub hooks_installed: bool,
-    /// Optional model override. Empty lets Codex choose its server default.
+    /// Optional model ID. ChatGPT selects from its authorised catalog;
+    /// API uses its documented default when empty.
     /// Defaulted explicitly so a settings.json written by an older build still loads.
     #[serde(default = "default_model")]
     pub model: String,
@@ -31,7 +32,7 @@ fn default_model() -> String {
 }
 
 fn default_backend() -> String {
-    "codex".into()
+    "chatgpt".into()
 }
 
 impl Default for Settings {
@@ -82,10 +83,17 @@ fn settings_path() -> PathBuf {
 }
 
 pub fn load() -> Settings {
-    match std::fs::read(settings_path()) {
+    let mut loaded = match std::fs::read(settings_path()) {
         Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
         Err(_) => Settings::default(),
+    };
+    // The original session backend was intentionally gated on CLI compatibility.
+    // Move that selection to official SIWC; OAuth consent is still required.
+    if loaded.chat_backend == "codex" {
+        loaded.chat_backend = default_backend();
+        loaded.model.clear();
     }
+    loaded
 }
 
 pub fn save(settings: &Settings) -> std::io::Result<()> {
