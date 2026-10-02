@@ -1,9 +1,58 @@
 //! Independent adversarial tests. Uses only synthetic tokens and in-memory storage.
 use crate::storage::{self, Store};
-use crate::{Credentials, Manager};
+use crate::{select_model, Credentials, Manager, Model};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
+
+#[test]
+fn automatic_model_prefers_catalog_luna_over_first_heavier_entry() {
+    let catalog = vec![
+        Model {
+            slug: "gpt-6-astra".into(),
+            display_name: "Heavy first entry".into(),
+        },
+        Model {
+            slug: "gpt-5.6-luna".into(),
+            display_name: "Available Luna".into(),
+        },
+    ];
+    assert_eq!(select_model(&catalog, "").unwrap().slug, "gpt-5.6-luna");
+    assert_eq!(
+        select_model(&catalog, "gpt-6-astra").unwrap().slug,
+        "gpt-6-astra"
+    );
+}
+
+#[test]
+fn automatic_model_never_invents_luna_when_absent_from_catalog() {
+    let catalog = vec![Model {
+        slug: "account-available-model".into(),
+        display_name: "Available".into(),
+    }];
+    assert_eq!(
+        select_model(&catalog, "").unwrap().slug,
+        "account-available-model"
+    );
+    assert!(select_model(&catalog, "gpt-5.6-luna").is_none());
+    assert!(select_model(&[], "").is_none());
+}
+
+#[test]
+fn unavailable_explicit_model_never_silently_switches_to_another_model() {
+    let catalog = vec![Model {
+        slug: "gpt-5.6-luna".into(),
+        display_name: "Available".into(),
+    }];
+    for requested in [
+        "gpt-6-astra",
+        "GPT-5.6-LUNA",
+        "gpt-5.6-luna ",
+        "synthetic-secret-marker",
+    ] {
+        assert!(select_model(&catalog, requested).is_none());
+    }
+}
 
 #[derive(Default)]
 struct FaultStore {

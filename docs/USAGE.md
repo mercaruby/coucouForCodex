@@ -22,4 +22,8 @@ OpenAI's `subscription_sharing_usage_limit_exceeded` can concern app or account 
 
 Managing a quota can require a human change to the app's allowance in ChatGPT or waiting for the provider's reset. The software cannot remove a provider limit. Changing the local code or reconnecting repeatedly is not a quota bypass.
 
+An available catalog model is not a guarantee that a request to that model will be admitted. Automatic chat selection prefers `gpt-5.6-luna` when it is present in the connected account's catalog, otherwise the first available model. Settings displays the resolved automatic model. An explicit model selection is respected; a failed request never silently retries with a different model or billing path. A local comparison reproduced a sharing-limit rejection for the previous first-model default and completed a minimal request with Luna using the same connection.
+
+For a local diagnostic check, close Coucou to serialize access to its rotating credentials. From `windows`, set `COUCOU_CHAT_ACCEPTANCE=1` and run `cargo run -p chatgpt-client --example check_connection --locked` (automatic selection), or append `-- gpt-5.6-luna` to select that eligible model explicitly. This sends one fixed, minimal request, uses the app's protected connection and prints only connection flags, model metadata and completion size or sanitized errors. It never prints tokens, account identifiers, reply text or provider message bodies, and does not start sign-in automatically.
+
 Other CodeNotch providers are not enabled automatically. Their collectors use different credentials and interfaces; this adaptation covers the user's Codex and ChatGPT requirement.

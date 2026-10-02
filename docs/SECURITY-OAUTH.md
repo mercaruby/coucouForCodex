@@ -4,7 +4,7 @@ Fecha: auditoría OAuth del 1 de octubre de 2026; revisión adicional del consum
 
 ## Decisión de arquitectura
 
-Se acepta **la integración OAuth y Responses para el uso personal evaluado**, dentro del modelo de amenaza definido, tras 44 pruebas de la crate y una aceptación real completada: OAuth oficial Sign in with ChatGPT, credenciales propias en Windows Credential Manager y llamadas directas a Responses. No necesita obtener las credenciales de Codex ni ejecutar `codex app-server` para el chat. El PM confirmó consentimiento, catálogo de cinco modelos y una respuesta mínima completada con `gpt-5.6-luna`; empaquetado release y arranque final de la app siguen bajo validación del PM.
+Se acepta **la integración OAuth y Responses para el uso personal evaluado**, dentro del modelo de amenaza definido, tras 44 pruebas iniciales de la crate y una aceptación real completada: OAuth oficial Sign in with ChatGPT, credenciales propias en Windows Credential Manager y llamadas directas a Responses. No necesita obtener las credenciales de Codex ni ejecutar `codex app-server` para el chat. El PM confirmó consentimiento, catálogo de cinco modelos y una respuesta mínima completada con `gpt-5.6-luna`; posteriormente confirmó el build release y el arranque de la aplicación.
 
 El flujo público documentado permite registro dinámico y uso del plan tras consentimiento. La conexión se crea para esta aplicación; identidad y permiso de uso del plan son capacidades distintas. Tener una sesión válida no basta para activar inferencia. No se deduce que todas las cuentas o modelos sean elegibles. [Disponibilidad y ejemplo oficial](https://developers.openai.com/cookbook/articles/sign-in-with-chatgpt).
 
@@ -110,7 +110,7 @@ El lector limita toda la transacción a 20 segundos, cada línea a 256 KiB, sali
 
 La caché serializa consultas, conserva resultados durante 60 segundos y aplica mínimo de 15 segundos al refresco explícito. Tras error, un resultado previo se marca stale y conserva su fecha; cambiar ruta de CLI descarta el snapshot anterior. Los valores nulos o inválidos siguen desconocidos y un mapa de buckets explícitamente vacío no se reemplaza por datos legacy.
 
-**Aceptación de esta ampliación:** el integrador/validador comunicó 18 pruebas del lector pasando, incluidos timeout, flood, error privado, límites/valores nulos, PE y caché. La prueba real explícita, ignorada en la suite rutinaria, pasó en 0,76 segundos y devolvió únicamente el DTO público de uso de Codex: 11% y 45% consumido en sus ventanas en ese momento. No inició otro login, OAuth, conversación ni inferencia. Este resultado no mide la cuota SIWC de Coucou ni el porcentaje global del plan, y puede cambiar después de la consulta. La auditoría acepta el lector dentro de las fronteras descritas; compilación release y comprobación final de UI corresponden al PM.
+**Aceptación de esta ampliación:** el integrador/validador comunicó 18 pruebas del lector pasando, incluidos timeout, flood, error privado, límites/valores nulos, PE y caché. La prueba real explícita, ignorada en la suite rutinaria, pasó en 0,76 segundos y devolvió dos ventanas con métricas válidas. Este documento omite sus valores privados. No inició otro login, OAuth, conversación ni inferencia. Este resultado no mide la cuota SIWC de Coucou ni el porcentaje global del plan, y puede cambiar después de la consulta. La auditoría acepta el lector dentro de las fronteras descritas; compilación release y comprobación final de UI corresponden al PM.
 
 ## Recuperación de un almacén propio corrupto
 

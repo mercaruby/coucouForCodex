@@ -435,7 +435,7 @@ impl Manager {
             .send()
             .map_err(|_| "Could not obtain models for your ChatGPT connection.")?;
         if !response.status().is_success() {
-            return Err(responses::http_error(response.status().as_u16()));
+            return Err(responses::response_error(response));
         }
         // Catalog entries include substantial capability metadata that we do
         // not expose. Bound the complete catalog separately from OAuth tokens.
@@ -487,12 +487,8 @@ impl Manager {
         }
         let (generation, record) = self.access()?;
         let models = self.models_with(&record)?;
-        let selected = if model.is_empty() {
-            models.first()
-        } else {
-            models.iter().find(|entry| entry.slug == model)
-        }
-        .ok_or("Choose an available model from your connected ChatGPT account in Settings.")?;
+        let selected = select_model(&models, model)
+            .ok_or("Choose an available model from your connected ChatGPT account in Settings.")?;
         self.check_generation(generation)?;
         let text = responses::request(
             &oauth::inference_http()?,
@@ -578,6 +574,17 @@ fn scopes(value: &str) -> Vec<String> {
         .take(64)
         .map(str::to_string)
         .collect()
+}
+
+fn select_model<'a>(models: &'a [Model], requested: &str) -> Option<&'a Model> {
+    if requested.is_empty() {
+        models
+            .iter()
+            .find(|model| model.slug == "gpt-5.6-luna")
+            .or_else(|| models.first())
+    } else {
+        models.iter().find(|model| model.slug == requested)
+    }
 }
 fn sharing(record: &Credentials) -> bool {
     record

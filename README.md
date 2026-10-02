@@ -8,7 +8,7 @@ Choose **ChatGPT plan** in Settings and **Continue with ChatGPT**. Your system b
 
 The native Rust client owns this app's OAuth registration. It validates PKCE, state, nonce and signed identity claims, and keeps credentials in a separate Windows Credential Manager service. It does not import Codex's auth.json, browser cookies or another app's tokens. Tokens never return to the webview.
 
-Chat uses the public Responses API directly, with store:false, streaming and no tools. The model cannot run local commands, browse local files, use MCP/plugins or inherit Codex configuration. The app sends the messages and attachments you submit. Models come from the connected account; success requires a completed stream. Limits or declined consent remain errors and never switch to API billing.
+Chat uses the public Responses API directly, with store:false, streaming and no tools. The model cannot run local commands, browse local files, use MCP/plugins or inherit Codex configuration. The app sends the messages and attachments you submit. Models come from the connected account; automatic selection prefers GPT-5.6 Luna when available, and Settings names the resolved model. Manual selections are respected without automatic retries on another model. Success requires a completed stream. Limits or declined consent remain errors and never switch to API billing.
 
 Identity sign-in alone does not grant plan usage. Your account must grant that scope and meet OpenAI's current plan/workspace eligibility. Settings provides **Manage usage**. Provider policies still apply to submitted content; store:false does not remove every retention policy. See [plan usage](https://developers.openai.com/siwc/token-sharing-open-source).
 

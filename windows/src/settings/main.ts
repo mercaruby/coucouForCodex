@@ -258,7 +258,10 @@ function chatgptChatSection(): HTMLElement {
 
   function drawModels() {
     clear(model);
-    model.append(h("option", { value: "", text: settings.chatBackend === "chatgpt" ? "Default · first available account model" : "Default · GPT-5.6 Sol" }));
+    const automatic = models.find((entry) => entry.slug === "gpt-5.6-luna") ?? models[0];
+    model.append(h("option", { value: "", text: settings.chatBackend === "chatgpt"
+      ? `Automático${automatic ? ` · ${automatic.displayName}` : " · modelo disponible"}`
+      : "Default · GPT-5.6 Sol" }));
     const choices = settings.chatBackend === "chatgpt"
       ? models.map((entry) => [entry.slug, entry.displayName] as [string, string])
       : MODELS.filter(([slug]) => slug);
