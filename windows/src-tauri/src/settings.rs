@@ -103,3 +103,70 @@ pub fn save(settings: &Settings) -> std::io::Result<()> {
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     std::fs::write(settings_path(), json)
 }
+
+/// Called while the settings mutex is held. A chat control cannot restore a
+/// stale billing backend or overwrite unrelated preferences from another window.
+pub fn with_chat_model(
+    current: &Settings,
+    expected_backend: &str,
+    expected_model: &str,
+    model: &str,
+) -> Result<Settings, String> {
+    if current.chat_backend != expected_backend || current.model != expected_model {
+        return Err("Chat settings changed. Choose the model again.".into());
+    }
+    if !matches!(current.chat_backend.as_str(), "chatgpt" | "api")
+        || model.len() > 128
+        || model.chars().any(char::is_whitespace)
+        || (current.chat_backend == "api" && !matches!(model, "" | "gpt-5.6-sol"))
+    {
+        return Err("Choose an available chat model.".into());
+    }
+    let mut next = current.clone();
+    next.model = model.into();
+    Ok(next)
+}
+
+#[cfg(test)]
+mod model_tests {
+    use super::*;
+
+    #[test]
+    fn inline_choice_preserves_current_preferences_and_backend() {
+        let mut current = Settings::default();
+        current.auto_close_interval = 10.0;
+        current.sound_volume = 0.42;
+        current.active_integrations = vec!["synthetic-integration".into()];
+        current.codex_path = "C:/synthetic/codex.exe".into();
+        let next = with_chat_model(&current, "chatgpt", "", "gpt-5.6-luna").unwrap();
+        assert_eq!(next.model, "gpt-5.6-luna");
+        let mut next_without_model = next;
+        next_without_model.model.clear();
+        assert_eq!(
+            serde_json::to_value(next_without_model).unwrap(),
+            serde_json::to_value(current).unwrap()
+        );
+    }
+
+    #[test]
+    fn stale_choice_cannot_restore_api_billing_or_an_external_model() {
+        let current = Settings::default();
+        assert!(with_chat_model(&current, "api", "", "gpt-5.6-sol").is_err());
+        assert!(with_chat_model(&current, "chatgpt", "gpt-6-astra", "gpt-5.6-luna").is_err());
+        assert_eq!(current.chat_backend, "chatgpt");
+        assert_eq!(current.model, "");
+    }
+
+    #[test]
+    fn malformed_choices_are_rejected_without_reflecting_input() {
+        let current = Settings::default();
+        for bad in ["synthetic-private-marker bad".to_string(), "x".repeat(129)] {
+            let error = with_chat_model(&current, "chatgpt", "", &bad).unwrap_err();
+            assert!(!error.contains(&bad));
+        }
+        let mut api = current;
+        api.chat_backend = "api".into();
+        assert!(with_chat_model(&api, "api", "", "gpt-6-astra").is_err());
+        assert!(with_chat_model(&api, "api", "", "gpt-5.6-sol").is_ok());
+    }
+}

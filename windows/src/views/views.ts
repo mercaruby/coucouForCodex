@@ -18,6 +18,7 @@ import { Bridge } from "../core/bridge";
 export interface ViewActions {
   setView(v: IslandViewName): void;
   collapse(): void;
+  hide(): void;
   setFocus(id: string): void;
   openTerminal(): void;
   /** The ↗ button: opens whatever the focused pill points at. */
@@ -88,6 +89,7 @@ export function buildHeader(actions: ViewActions): ViewHost {
 
   const gearBtn = h("button", { title: "Settings", onclick: () => go("settings") }, svg(ICONS.gear, 14));
   const soundBtn = h("button", { title: "Mute", onclick: () => actions.toggleSound() }, svg(ICONS.speakerOn, 14));
+  const hideBtn = h("button", { title: "Ocultar panel", "aria-label": "Ocultar panel de Coucou", onclick: () => actions.hide() }, svg(ICONS.xmark, 12));
 
   function go(v: IslandViewName) {
     actions.blip();
@@ -98,7 +100,7 @@ export function buildHeader(actions: ViewActions): ViewHost {
     "div",
     { id: "header" },
     h("div", { class: "tabs" }, tabHome, tabChat, tabDrop, tabUsage),
-    h("div", { class: "header-actions" }, gearBtn, soundBtn),
+    h("div", { class: "header-actions" }, gearBtn, soundBtn, hideBtn),
   );
 
   return {

@@ -107,6 +107,7 @@ export class Island {
     const actions: ViewActions = {
       setView: (v) => this.setView(v),
       collapse: () => this.collapse(),
+      hide: () => this.hide(),
       setFocus: (id) => {
         State.setFocus(id);
         Sound.play("blip");
@@ -321,6 +322,14 @@ export class Island {
     // back left it thinking the island was still open, and a click on the compact
     // island then did nothing — the island could never be reopened.
     this.fsm.forcePetit();
+  }
+
+  /** User explicitly hides the overlay; keeps chat and the application running. */
+  hide() {
+    State.isPinned = false;
+    this.fsm.pinned = false;
+    this.homeCollapseAt = null;
+    this.fsm.forceHidden();
   }
 
   /** Alert from the hook server: open on this view. Pinned alerts never auto-close. */

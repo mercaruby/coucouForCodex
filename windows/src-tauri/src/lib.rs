@@ -119,6 +119,8 @@ fn save_settings(
             chat.reset();
         }
         *current = settings.clone();
+        // Serialize cross-window notifications with native preference commits.
+        let _ = app.emit("settings-changed", &settings);
         (screen_changed, autostart_changed)
     };
     if autostart_changed {
@@ -136,9 +138,41 @@ fn save_settings(
         let collapsed = shared.gate.collapsed.load(Ordering::Relaxed);
         island::apply_geometry(&app, &settings.screen, collapsed);
     }
-    // Keep the other window in step (island ⇄ settings window).
-    let _ = app.emit("settings-changed", settings);
     Ok(())
+}
+
+#[tauri::command]
+fn set_chat_model(
+    app: AppHandle,
+    shared: State<Shared>,
+    chat: State<Chat>,
+    subscription: State<Subscription>,
+    model: String,
+    expected_backend: String,
+    expected_model: String,
+    expected_generation: Option<u64>,
+) -> Result<Settings, String> {
+    let mut current = shared.settings.lock().unwrap();
+    let next = settings::with_chat_model(&current, &expected_backend, &expected_model, &model)?;
+    if next.chat_backend == "chatgpt" {
+        let manager = subscription.manager()?;
+        let session = manager.session();
+        if expected_generation != Some(session.generation)
+            || !session.connected
+            || !session.sharing
+            || manager.login_in_progress()
+        {
+            return Err("The ChatGPT connection changed. Choose the model again.".into());
+        }
+    }
+    settings::save(&next).map_err(|_| "Could not save the chat model.".to_string())?;
+    if current.model != next.model {
+        chat.reset();
+    }
+    *current = next.clone();
+    // Preserve commit/event order under the same mutex, including other windows.
+    let _ = app.emit("settings-changed", &next);
+    Ok(next)
 }
 
 /// Hidden island → shrink the window to the invisible wake strip and park the
@@ -270,13 +304,12 @@ fn hooks_apply(
     // The fingerprint comes from the preview the user actually looked at, so a
     // settings.json that changed in between is refused rather than overwritten.
     let backup = hooks::write(install, &fingerprint)?;
-    let updated = {
+    {
         let mut current = shared.settings.lock().unwrap();
         current.hooks_installed = install;
         let _ = settings::save(&current);
-        current.clone()
-    };
-    let _ = app.emit("settings-changed", updated);
+        let _ = app.emit("settings-changed", &*current);
+    }
     Ok(backup)
 }
 
@@ -492,10 +525,12 @@ async fn chatgpt_login_start(
 ) -> Result<LoginAttempt, String> {
     reset_subscription_chat(&app, &chat);
     let manager = subscription.manager()?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let start = manager.begin_login()?;
+    let _ = app.emit("chatgpt-login-state", true);
+    let worker = manager.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let start = worker.begin_login()?;
         if let Err(err) = open_authorization_url(&start.auth_url) {
-            let _ = manager.cancel_login(&start.attempt_id);
+            let _ = worker.cancel_login(&start.attempt_id);
             return Err(err);
         }
         Ok(LoginAttempt {
@@ -503,7 +538,9 @@ async fn chatgpt_login_start(
         })
     })
     .await
-    .map_err(|_| "OpenAI sign-in worker failed.".to_string())?
+    .map_err(|_| "OpenAI sign-in worker failed.".to_string());
+    let _ = app.emit("chatgpt-login-state", manager.login_in_progress());
+    result?
 }
 
 #[tauri::command]
@@ -515,9 +552,11 @@ async fn chatgpt_login_finish(
 ) -> Result<chatgpt_client::Session, String> {
     let manager = subscription.manager()?;
     let worker = manager.clone();
-    let session = tauri::async_runtime::spawn_blocking(move || worker.finish_login(&attempt_id))
+    let result = tauri::async_runtime::spawn_blocking(move || worker.finish_login(&attempt_id))
         .await
-        .map_err(|_| "OpenAI sign-in worker failed.".to_string())??;
+        .map_err(|_| "OpenAI sign-in worker failed.".to_string());
+    let _ = app.emit("chatgpt-login-state", manager.login_in_progress());
+    let session = result??;
     if manager.session().generation != session.generation {
         return Err("The ChatGPT connection changed during sign-in.".into());
     }
@@ -535,9 +574,12 @@ async fn chatgpt_login_cancel(
 ) -> Result<(), String> {
     reset_subscription_chat(&app, &chat);
     let manager = subscription.manager()?;
-    tauri::async_runtime::spawn_blocking(move || manager.cancel_login(&attempt_id))
+    let worker = manager.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || worker.cancel_login(&attempt_id))
         .await
-        .map_err(|_| "OpenAI sign-in worker failed.".to_string())?
+        .map_err(|_| "OpenAI sign-in worker failed.".to_string());
+    let _ = app.emit("chatgpt-login-state", manager.login_in_progress());
+    result?
 }
 
 #[tauri::command]
@@ -566,6 +608,7 @@ async fn chatgpt_logout(
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let result = manager.logout();
+        let _ = app.emit("chatgpt-login-state", manager.login_in_progress());
         let _ = app.emit("chatgpt-session-changed", manager.session());
         result
     })
@@ -597,6 +640,7 @@ pub fn run() {
             boot,
             usage_read,
             save_settings,
+            set_chat_model,
             set_collapsed,
             set_island_rect,
             focus_window,

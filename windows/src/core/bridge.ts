@@ -33,6 +33,9 @@ export const Bridge = {
   boot: () => call<BootInfo>("boot"),
 
   saveSettings: (settings: Settings) => callOrThrow<void>("save_settings", { settings }),
+  /** Patch only the model; an external backend/model/account change rejects stale choices. */
+  setChatModel: (model: string, expectedBackend: string, expectedModel: string, expectedGeneration: number | null) =>
+    callOrThrow<Settings>("set_chat_model", { model, expectedBackend, expectedModel, expectedGeneration }),
 
   /** Shrink the window down to the invisible wake strip (hidden) or back to full. */
   setCollapsed: (collapsed: boolean) => call<void>("set_collapsed", { collapsed }),

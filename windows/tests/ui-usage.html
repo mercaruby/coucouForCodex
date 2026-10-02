@@ -48,7 +48,9 @@
     Usage.session = { connected: true, sharing: true, generation: 1 };
     Usage.sessionUnavailable = false;
     const actions = {
-      setView(view) { State.view = view; render(); }, collapse() {}, setFocus() {}, openTerminal() {},
+      setView(view) { State.view = view; render(); }, collapse() {},
+      hide() { state.actions.push({ action: "hide" }); stage.hidden = true; },
+      setFocus() {}, openTerminal() {},
       openTarget() {}, openUrl: (url) => void Bridge.openUrl(url), decide() {}, toggleSound() {},
       setVolume() {}, setAutoClose() {}, openSettingsWindow() { state.actions.push({ action: "settings" }); }, blip() {},
     };

@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Coucou · selector de modelos · fixture</title>
+  <link rel="stylesheet" href="/src/style.css">
+  <style>
+    html, body { height:auto; overflow:auto; background:#252830; }
+    body { padding:24px; color:#f5f6f8; }
+    #controls { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:18px; max-width:900px; }
+    #controls button { padding:8px 12px; background:#363a45; border-radius:8px; }
+    #fixture-stage { position:relative; width:640px; height:240px; background:#090a0c; border-radius:22px; }
+    #fixture-stage .view { transition:none; transform:none; }
+    #fixture-report { max-width:900px; white-space:pre-wrap; font:12px/1.4 monospace; padding-top:16px; }
+  </style>
+</head>
+<body>
+  <div id="controls">
+    <button id="width-640">640 px</button><button id="width-320">320 px</button>
+    <button id="seed-chat">Conversación de prueba</button>
+    <button id="hold-save">Retener guardado</button><button id="resolve-save">Completar guardado</button><button id="reject-save">Fallar guardado</button>
+    <button id="hold-catalog">Retener catálogo</button><button id="resolve-catalog">Completar catálogo anterior</button>
+    <button id="new-generation">Nueva sesión</button><button id="external-model">Preferencia externa Luna</button>
+    <button id="api-backend">Backend API explícito</button><button id="chatgpt-backend">Backend ChatGPT explícito</button>
+    <button id="complete-reply">Completar respuesta sintética</button>
+  </div>
+  <main id="fixture-stage"><div id="content"><div id="fixture-header"></div><div id="views"></div></div></main>
+  <pre id="fixture-report" aria-live="polite">Preparando componentes reales…</pre>
+  <script type="module">
+    // Test entry only. All bridges are inert; no account, file or network calls.
+    import { Bridge } from "/src/core/bridge.ts";
+    import { State } from "/src/core/state.ts";
+    import { Usage } from "/src/core/usage.ts";
+    import { buildPrompt } from "/src/views/chat.ts";
+    import { buildHeader } from "/src/views/views.ts";
+    const stage = document.querySelector("#fixture-stage");
+    const report = document.querySelector("#fixture-report");
+    const trace = [];
+    let generation = 1;
+    let heldSave = false;
+    let heldCatalog = false;
+    let savePending = null;
+    let catalogPending = [];
+    let replyPending = null;
+    const catalog = () => generation === 1 ? [
+      { slug:"gpt-6-astra", displayName:"GPT-6 Astra" },
+      { slug:"gpt-5.6-luna", displayName:"GPT-5.6 Luna" },
+    ] : [{ slug:`fixture-generation-${generation}`, displayName:`Modelo de prueba sesión ${generation}` }];
+    const session = () => ({ connected:true, sharing:true, generation,
+      email:null, subject:null, clientId:null });
+    Bridge.chatgptSession = async () => { trace.push({ action:"session", generation }); return session(); };
+    Bridge.chatgptModels = async () => {
+      const snapshot = catalog();
+      trace.push({ action:"catalog", generation });
+      if (!heldCatalog) return snapshot;
+      return new Promise(resolve => catalogPending.push(() => resolve(snapshot)));
+    };
+    Bridge.saveSettings = async (settings) => {
+      throw new Error("Unexpected full-settings write from inline selector");
+    };
+    Bridge.setChatModel = async (model, expectedBackend, expectedModel, expectedGeneration) => {
+      trace.push({ action:"setModel", model, expectedBackend, expectedModel, expectedGeneration });
+      if (heldSave) await new Promise((resolve,reject) => { savePending = { resolve,reject }; });
+      if (State.settings.chatBackend !== expectedBackend || State.settings.model !== expectedModel ||
+        (expectedBackend === "chatgpt" && generation !== expectedGeneration)) throw new Error("Stale synthetic preference");
+      return { ...State.settings, model };
+    };
+    Bridge.chatReset = async () => { trace.push({ action:"chatReset" }); };
+    Bridge.chatSend = async () => {
+      trace.push({ action:"syntheticSend", backend:State.settings.chatBackend, model:State.settings.model });
+      return new Promise(resolve => { replyPending = () => resolve({ text:"Respuesta sintética OK" }); });
+    };
+    Bridge.openUrl = async () => { trace.push({ action:"openFixedUsage" }); };
+    Bridge.focusWindow = async () => null; Bridge.log = async () => null;
+    State.settings.chatBackend = "chatgpt"; State.settings.model = "";
+    State.settings.soundEnabled = false; State.mode = "expanded"; State.view = "prompt"; State.paused = false;
+    Usage.session = { connected:true, sharing:true, generation }; Usage.sessionGeneration = generation;
+    const actions = { setView() {}, collapse() {}, hide() { trace.push({ action:"hide" }); sync(); }, setFocus() {}, openTerminal() {}, openTarget() {},
+      openUrl() {}, decide() {}, toggleSound() {}, setVolume() {}, setAutoClose() {}, openSettingsWindow() {}, blip() {} };
+    const header = buildHeader(actions);
+    document.querySelector("#fixture-header").replaceWith(header.el);
+    const prompt = buildPrompt(() => sync());
+    prompt.el.classList.add("on");
+    document.querySelector("#views").append(prompt.el);
+    function sync() {
+      header.sync(); prompt.sync();
+      stage.dataset.model = State.settings.model;
+      stage.dataset.backend = State.settings.chatBackend;
+      stage.dataset.historyCount = String(State.chatHistory.length);
+      stage.dataset.epoch = String(State.chatEpoch);
+      stage.dataset.file = State.droppedFile?.name ?? "";
+      stage.dataset.generation = String(generation);
+      report.textContent = JSON.stringify({ trace, pendingSave:!!savePending,
+        pendingCatalog:catalogPending.length, pendingReply:!!replyPending,
+        model:State.settings.model, backend:State.settings.chatBackend,
+        historyCount:State.chatHistory.length, file:State.droppedFile?.name ?? null,
+        generation, epoch:State.chatEpoch }, null, 2);
+    }
+    State.subscribe(sync);
+    document.querySelector("#width-640").onclick = () => stage.style.width = "640px";
+    document.querySelector("#width-320").onclick = () => stage.style.width = "320px";
+    document.querySelector("#seed-chat").onclick = () => {
+      State.chatHistory = [ { id:9001, role:"user", content:"Mensaje anterior sintético" },
+        { id:9002, role:"assistant", content:"Respuesta anterior sintética" } ];
+      State.droppedFile = { name:"fixture.txt", path:"C:/synthetic-fixture/not-read.txt" };
+      State.view = "prompt"; State.notify();
+    };
+    document.querySelector("#hold-save").onclick = () => { heldSave = true; sync(); };
+    document.querySelector("#resolve-save").onclick = () => { heldSave = false; savePending?.resolve(); savePending = null; sync(); };
+    document.querySelector("#reject-save").onclick = () => { heldSave = false; savePending?.reject(new Error("synthetic-secret-marker")); savePending = null; sync(); };
+    document.querySelector("#hold-catalog").onclick = () => { heldCatalog = true; sync(); };
+    document.querySelector("#resolve-catalog").onclick = () => { heldCatalog = false; const pending = catalogPending; catalogPending = []; pending.forEach(resolve => resolve()); sync(); };
+    document.querySelector("#new-generation").onclick = () => { generation++; Usage.updateSession(session()); State.notify(); };
+    document.querySelector("#external-model").onclick = () => { State.settings = { ...State.settings, model:"gpt-5.6-luna" }; State.resetChat(); };
+    document.querySelector("#api-backend").onclick = () => { State.settings = { ...State.settings, chatBackend:"api", model:"" }; State.resetChat(); };
+    document.querySelector("#chatgpt-backend").onclick = () => { State.settings = { ...State.settings, chatBackend:"chatgpt", model:"" }; State.resetChat(); };
+    document.querySelector("#complete-reply").onclick = () => { replyPending?.(); replyPending = null; sync(); };
+    sync();
+  </script>
+</body>
+</html>

@@ -3,12 +3,13 @@
 
 import { h, svg, clear } from "./dom";
 import { ICONS } from "./icons";
-import { Bridge, type ChatContext } from "../core/bridge";
+import { Bridge, onEvent, type ChatContext } from "../core/bridge";
 import { Sound } from "../core/sound";
 import { State, type ChatMessage } from "../core/state";
 import type { ViewHost } from "./views";
 import { chatNotice, MANAGE_USAGE_URL } from "../core/chat-notice";
 import { Usage } from "../core/usage";
+import { ChatModelCatalog } from "../core/chat-models";
 
 let nextId = 1;
 
@@ -49,6 +50,11 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
   }) as HTMLInputElement;
   const send = h("button", { class: "send-btn", title: "Send" }, svg(ICONS.arrowUp, 11));
   const bar = h("div", { class: "chat-bar" }, input, send);
+  const modelSelect = h("select", { class: "chat-model-select", "aria-label": "Modelo del chat" });
+  const modelRow = h("div", { class: "chat-model-row" }, h("span", { text: "Modelo" }), modelSelect);
+  const modelFeedback = h("span", { "aria-live": "polite" });
+  const retryModels = h("button", { class: "link-btn", text: "Reintentar" });
+  const modelStatus = h("div", { class: "chat-model-feedback" }, modelFeedback, retryModels);
   const planLabel = h("span");
   const manage = h("button", { class: "link-btn", text: "Gestionar uso ↗", onclick: () => void Bridge.openUrl(MANAGE_USAGE_URL) });
   const plan = h("div", { class: "chat-plan" }, planLabel, manage);
@@ -56,16 +62,104 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
   const el = h(
     "div",
     { class: "view" },
-    h("div", { class: "card wash chat-card" }, h("div", { class: "chat-body" }, chipRow, log, bar, plan)),
+    h("div", { class: "card wash chat-card" }, h("div", { class: "chat-body" }, chipRow, log, modelRow, modelStatus, bar, plan)),
   );
   (el.querySelector(".card") as HTMLElement).style.setProperty("--wash", "rgba(99,102,241,0.5)");
 
   let sending = false;
+  let modelSaving = false;
+  let saveError: string | null = null;
+  let optionKey = "";
   let renderedCount = -1;
+  const catalog = new ChatModelCatalog(() => {
+    State.notify();
+    onHeightChange();
+  });
+  // Both windows share native settings/account events. Hidden views discard stale catalogs too.
+  let observedModel = State.settings.model;
+  State.subscribe(() => {
+    const invalidated = catalog.observe();
+    if (invalidated || observedModel !== State.settings.model) saveError = null;
+    observedModel = State.settings.model;
+  });
+  void onEvent<boolean>("chatgpt-login-state", (busy) => catalog.setLoginBusy(busy));
+
+  function readyToSend() {
+    return !sending && !modelSaving && !catalog.loginBusy && (State.settings.chatBackend === "api" || catalog.available);
+  }
+
+  function syncModels() {
+    const api = State.settings.chatBackend === "api";
+    const visible = State.view === "prompt" && el.isConnected && !el.closest("[inert]");
+    catalog.ensure(visible);
+    const choices = api ? [{ slug: "gpt-5.6-sol", displayName: "gpt-5.6-sol" }] : catalog.models;
+    const automatic = api ? "gpt-5.6-sol" : catalog.automatic?.displayName;
+    const selected = State.settings.model;
+    const unavailable = selected !== "" && !choices.some((model) => model.slug === selected);
+    const key = JSON.stringify([api, automatic, choices, unavailable]);
+    if (key !== optionKey) {
+      optionKey = key;
+      clear(modelSelect);
+      modelSelect.append(h("option", { value: "", text: automatic ? `Automático · ${automatic}` : "Automático" }));
+      for (const model of choices) modelSelect.append(h("option", { value: model.slug, text: model.displayName }));
+      if (unavailable) modelSelect.append(h("option", { value: "__unavailable", text: "Modelo guardado no disponible", disabled: true }));
+    }
+    modelSelect.value = unavailable ? "__unavailable" : selected;
+    modelSelect.disabled = sending || modelSaving || catalog.loginBusy || (!api && !catalog.available);
+    const feedback = saveError ?? (modelSaving ? "Guardando modelo…" : !api && catalog.loginBusy ? "Conexión en curso…"
+      : !api && catalog.loading ? "Cargando modelos…" : !api && catalog.error ? catalog.error
+      : !api && !catalog.connected ? "Conecta ChatGPT en Ajustes para elegir un modelo."
+      : !api && !catalog.sharing ? "Activa el permiso de uso de ChatGPT en Ajustes."
+      : unavailable ? "Elige un modelo disponible antes de enviar." : null);
+    modelFeedback.textContent = feedback ?? "";
+    modelStatus.hidden = feedback === null;
+    retryModels.hidden = api || !catalog.error || modelSaving || sending || catalog.loginBusy;
+    send.disabled = !readyToSend() || unavailable;
+  }
+
+  async function chooseModel() {
+    const selected = modelSelect.value;
+    const api = State.settings.chatBackend === "api";
+    if (sending || modelSaving || modelSelect.disabled || selected === State.settings.model ||
+      (selected !== "" && !(api ? selected === "gpt-5.6-sol" : catalog.models.some((model) => model.slug === selected)))) {
+      syncModels();
+      return;
+    }
+    const before = State.settings;
+    const epoch = State.chatEpoch;
+    const generation = api ? null : Usage.sessionGeneration;
+    modelSaving = true;
+    saveError = null;
+    syncModels();
+    State.notify();
+    try {
+      const settings = await Bridge.setChatModel(selected, before.chatBackend, before.model, generation);
+      // The native event normally commits first. A later external preference/account change wins.
+      if (State.settings === before && (api || Usage.sessionGeneration === generation) && State.chatEpoch === epoch) {
+        State.settings = settings;
+        State.resetChat();
+      }
+    } catch {
+      saveError = "No se pudo cambiar el modelo. Revisa la conexión y vuelve a elegirlo.";
+    } finally {
+      modelSaving = false;
+      syncModels();
+      State.notify();
+      onHeightChange();
+    }
+  }
+  modelSelect.addEventListener("change", () => void chooseModel());
+  modelSelect.addEventListener("keydown", (event) => event.stopPropagation());
+  retryModels.addEventListener("click", () => {
+    saveError = null;
+    catalog.retry();
+  });
 
   async function submit() {
     const query = input.value.trim();
-    if (!query || sending) return;
+    if (!query || !readyToSend() || (State.settings.model !== "" &&
+      !(State.settings.chatBackend === "api" ? State.settings.model === "gpt-5.6-sol"
+        : catalog.models.some((model) => model.slug === State.settings.model)))) return;
     input.value = "";
     sending = true;
     const epoch = State.chatEpoch;
@@ -139,7 +233,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
 
       input.placeholder = State.chatHistory.length === 0 ? "Ask me anything…" : "Continue…";
       input.disabled = sending;
-      send.disabled = sending;
+      syncModels();
       planLabel.textContent = State.settings.chatBackend === "chatgpt" ? "Usando tu plan de ChatGPT" : "OpenAI API · facturación independiente";
       manage.hidden = State.settings.chatBackend !== "chatgpt";
     },

@@ -168,6 +168,11 @@ impl Manager {
         }
     }
 
+    /// Public UI activity only; never returns an attempt ID or credential.
+    pub fn login_in_progress(&self) -> bool {
+        self.inner.lock().unwrap().pending.is_some()
+    }
+
     pub fn begin_login(&self) -> Result<LoginStart, String> {
         let _gate = self.auth_gate.lock().unwrap();
         let discovery = oauth::discovery(&oauth::http()?)?;
