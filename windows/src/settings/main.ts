@@ -13,6 +13,7 @@ let version = "";
 let saveQueue: Promise<boolean> = Promise.resolve(true);
 let updateChatControls = () => {};
 let updateApiVisibility = () => {};
+let updateVisibilityControls = () => {};
 
 const root = document.getElementById("settings-root")!;
 
@@ -43,6 +44,7 @@ function toggle(on: boolean, onChange: (v: boolean) => void): HTMLElement {
   el.addEventListener("click", () => {
     const next = !el.classList.contains("on");
     el.classList.toggle("on", next);
+    el.setAttribute("aria-pressed", String(next));
     onChange(next);
   });
   return el;
@@ -603,16 +605,35 @@ function generalSection(): HTMLElement {
     void save();
   });
 
+  let previousDelay = settings.autoCloseInterval > 0 ? settings.autoCloseInterval : 15;
   const autoClose = h("input", {
     type: "number", min: "5", max: "120", step: "1",
-    value: String(Math.round(settings.autoCloseInterval)),
+    value: String(Math.round(previousDelay)),
     style: "width:72px",
   }) as HTMLInputElement;
+  autoClose.disabled = settings.autoCloseInterval === 0;
   autoClose.addEventListener("change", () => {
     settings.autoCloseInterval = Math.max(5, Math.min(120, Number(autoClose.value) || 15));
     autoClose.value = String(settings.autoCloseInterval);
+    previousDelay = settings.autoCloseInterval;
     void save();
   });
+  const never = toggle(settings.autoCloseInterval === 0, (on) => {
+    settings.autoCloseInterval = on ? 0 : previousDelay;
+    autoClose.disabled = on;
+    void save();
+  });
+  never.setAttribute("aria-label", "No ocultar Coucou automáticamente");
+  updateVisibilityControls = () => {
+    const disabled = settings.autoCloseInterval === 0;
+    never.classList.toggle("on", disabled);
+    never.setAttribute("aria-pressed", String(disabled));
+    autoClose.disabled = disabled;
+    if (!disabled) {
+      previousDelay = settings.autoCloseInterval;
+      autoClose.value = String(Math.round(previousDelay));
+    }
+  };
 
   const screen = h("select", {}) as HTMLSelectElement;
   screen.append(
@@ -635,9 +656,11 @@ function generalSection(): HTMLElement {
       volume,
     ),
     h("div", { class: "row" },
-      h("label", { text: "Auto-close" }),
+      h("label", { text: "Ocultar automáticamente" }),
+      never,
+      h("span", { class: "hint", text: "Nunca" }),
       autoClose,
-      h("span", { class: "hint", text: "seconds after you leave the island" }),
+      h("span", { class: "hint", text: "segundos sin ratón" }),
     ),
     h("div", { class: "row" },
       h("label", { text: "Island lives on" }),
@@ -689,6 +712,7 @@ async function main() {
   void onEvent<Settings>("settings-changed", (s) => {
     settings = { ...settings, ...s };
     updateChatControls();
+    updateVisibilityControls();
   });
 }
 

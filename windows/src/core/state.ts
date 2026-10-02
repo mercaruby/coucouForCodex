@@ -85,6 +85,7 @@ export interface IntegrationInfo {
 export interface Settings {
   soundEnabled: boolean;
   soundVolume: number;
+  /** Seconds after leaving; zero keeps the panel visible until manually collapsed. */
   autoCloseInterval: number;
   absenceInterval: number;
   activeIntegrations: string[];

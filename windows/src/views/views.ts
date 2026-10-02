@@ -439,8 +439,9 @@ function buildSettings(actions: ViewActions): ViewHost {
     oninput: (e: Event) => actions.setVolume(Number((e.target as HTMLInputElement).value)),
   }) as HTMLInputElement;
   const autoLabel = h("span", {});
-  const segButtons = [10, 15, 30].map((s) =>
-    h("button", { onclick: () => actions.setAutoClose(s) }, `${s}s`),
+  const delays = [0, 10, 15, 30];
+  const segButtons = delays.map((s) =>
+    h("button", { onclick: () => actions.setAutoClose(s) }, s === 0 ? "Nunca" : `${s}s`),
   );
   const codexBadge = h("span", { class: "status-badge" });
   const apiBadge = h("span", { class: "status-badge" });
@@ -465,7 +466,7 @@ function buildSettings(actions: ViewActions): ViewHost {
       h("button", {
         class: "link-btn",
         style: "color:#8e939c;font-size:11.5px",
-        text: "Settings…",
+        text: "Modelo y conexión…",
         onclick: () => actions.openSettingsWindow(),
       }),
     ),
@@ -481,8 +482,8 @@ function buildSettings(actions: ViewActions): ViewHost {
       soundSwitch.classList.toggle("on", s.soundEnabled);
       volume.value = String(s.soundVolume);
       volume.style.opacity = s.soundEnabled ? "1" : "0.4";
-      autoLabel.textContent = `Auto-close · ${Math.round(s.autoCloseInterval)}s`;
-      segButtons.forEach((b, i) => b.classList.toggle("on", s.autoCloseInterval === [10, 15, 30][i]));
+      autoLabel.textContent = s.autoCloseInterval === 0 ? "Ocultar · Nunca" : `Ocultar · ${Math.round(s.autoCloseInterval)}s`;
+      segButtons.forEach((b, i) => b.classList.toggle("on", s.autoCloseInterval === delays[i]));
       clear(codexBadge);
       codexBadge.append(
         dot(s.hooksInstalled ? "#22C55E" : "#F4505E", 6),

@@ -161,7 +161,7 @@ export class Island {
       },
       setAutoClose: (s) => {
         State.settings.autoCloseInterval = s;
-        this.fsm.homeToPetitDelay = s;
+        this.applySettings();
         void this.persistSettings();
         State.notify();
       },
@@ -584,7 +584,7 @@ export class Island {
     }
     if (!inIsland && this.wasInIsland) {
       this.fsm.mouseLeft();
-      if (this.fsm.state === "home" && !State.isPinned) {
+      if (this.fsm.state === "home" && !State.isPinned && State.settings.autoCloseInterval > 0) {
         this.homeCollapseAt = performance.now() + State.settings.autoCloseInterval * 1000;
       }
     }
@@ -889,7 +889,8 @@ export class Island {
   applySettings() {
     Sound.setEnabled(State.settings.soundEnabled);
     Sound.setVolume(State.settings.soundVolume);
-    this.fsm.homeToPetitDelay = State.settings.autoCloseInterval;
+    this.fsm.configureAutoClose(State.settings.autoCloseInterval, !this.wasInIsland);
+    this.homeCollapseAt = null;
     State.notify();
   }
 

@@ -23,6 +23,14 @@ export class IslandStateMachine {
   private homeCollapse: number | null = null;
   private greetCollapse: number | null = null;
 
+  /** Zero keeps expanded/compact visible. Preference changes cancel old timers. */
+  configureAutoClose(seconds: number, outside: boolean) {
+    this.homeToPetitDelay = seconds;
+    this.clear("petitHide");
+    this.clear("homeCollapse");
+    if (outside && (this.state === "home" || this.state === "petit")) this.mouseLeft();
+  }
+
   // ── Inputs ──────────────────────────────────────────────────────────────────
 
   launch() {
@@ -106,6 +114,7 @@ export class IslandStateMachine {
 
   private schedulePetitHide() {
     this.clear("petitHide");
+    if (this.homeToPetitDelay <= 0) return;
     this.petitHide = window.setTimeout(() => {
       this.petitHide = null;
       if (this.state === "petit") this.transition("hidden");
@@ -114,7 +123,7 @@ export class IslandStateMachine {
 
   private scheduleHomeCollapse() {
     this.clear("homeCollapse");
-    if (this.pinned) return;
+    if (this.pinned || this.homeToPetitDelay <= 0) return;
     this.homeCollapse = window.setTimeout(() => {
       this.homeCollapse = null;
       if (this.state === "home") this.transition("petit");
