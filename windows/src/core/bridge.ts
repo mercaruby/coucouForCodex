@@ -6,6 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import type { Settings } from "./state";
+import type { UsageSnapshot } from "./usage";
 
 export const IS_TAURI =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -83,6 +84,7 @@ export const Bridge = {
   chatSend: (query: string, context: ChatContext | null) =>
     callOrThrow<{ text: string }>("chat_send", { query, context }),
   chatgptSession: () => callOrThrow<ChatGPTSession>("chatgpt_session"),
+  usageRead: (refresh: boolean) => callOrThrow<UsageSnapshot>("usage_read", { refresh }),
   chatgptModels: () => callOrThrow<ChatGPTModel[]>("chatgpt_models"),
   chatgptLoginStart: () => callOrThrow<{ attemptId: string }>("chatgpt_login_start"),
   chatgptLoginFinish: (attemptId: string) => callOrThrow<ChatGPTSession>("chatgpt_login_finish", { attemptId }),

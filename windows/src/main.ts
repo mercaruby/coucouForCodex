@@ -1,12 +1,13 @@
 // Entry point: boot the bridge, wire the island, start the greeting.
 
 import "./style.css";
-import { Bridge, IS_TAURI, onEvent } from "./core/bridge";
+import { Bridge, IS_TAURI, onEvent, type ChatGPTSession } from "./core/bridge";
 import { Sound } from "./core/sound";
 import { State, type Settings } from "./core/state";
 import { Island } from "./island/island";
 import { registerHookHandlers } from "./island/hooks";
 import { registerIntegrationHandlers, refreshConfigured } from "./island/integrations";
+import { Usage } from "./core/usage";
 
 async function main() {
   const root = document.getElementById("root");
@@ -54,11 +55,14 @@ async function main() {
 
   // The settings window writes preferences; apply them here without a restart.
   await onEvent<null>("chat-reset", () => State.resetChat());
+  await onEvent<ChatGPTSession>("chatgpt-session-changed", (session) => Usage.updateSession(session));
   await onEvent<Settings>("settings-changed", (s) => {
+    const pathChanged = State.settings.codexPath !== s.codexPath;
     if (State.settings.chatBackend !== s.chatBackend || State.settings.model !== s.model || State.settings.codexPath !== s.codexPath) {
       State.resetChat();
     }
     State.settings = { ...State.settings, ...s };
+    if (pathChanged) Usage.invalidateCodex();
     island.applySettings();
     State.loadIntegrationTasks();
     void refreshConfigured();

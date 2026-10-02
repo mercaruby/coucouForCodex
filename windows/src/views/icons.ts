@@ -2,6 +2,7 @@
 // Drawn on a 24×24 grid so they read at the same optical size.
 
 export const ICONS = {
+  usage: "M4 20V11h3v9H4zm6 0V4h3v16h-3zm6 0V8h3v12h-3z",
   // house.fill
   house: "M12 3.2 2.8 10.6V21h6.6v-5.4h5.2V21h6.6V10.6L12 3.2z",
   // bubble.left.fill

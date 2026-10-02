@@ -11,6 +11,9 @@ import { createMiniBot, pruneMiniBots } from "../mochi/minibots";
 import { buildPrompt } from "./chat";
 import { buildChoose, buildUpload, buildUploading } from "./upload";
 import { renderIntegrationCard, type IntegrationCardHooks } from "./integrations";
+import { buildUsage } from "./usage";
+import { MANAGE_USAGE_URL } from "../core/chat-notice";
+import { Bridge } from "../core/bridge";
 
 export interface ViewActions {
   setView(v: IslandViewName): void;
@@ -81,6 +84,7 @@ export function buildHeader(actions: ViewActions): ViewHost {
   const tabHome = h("button", { class: "tab", title: "Overview", onclick: () => go("overview") }, svg(ICONS.house, 13));
   const tabChat = h("button", { class: "tab", title: "Ask", onclick: () => go("prompt") }, svg(ICONS.bubble, 13));
   const tabDrop = h("button", { class: "tab", title: "Drop", onclick: () => go("upload") }, svg(ICONS.plus, 13));
+  const tabUsage = h("button", { class: "tab", title: "Consumo", "aria-label": "Consumo de plataformas", onclick: () => go("usage") }, svg(ICONS.usage, 13));
 
   const gearBtn = h("button", { title: "Settings", onclick: () => go("settings") }, svg(ICONS.gear, 14));
   const soundBtn = h("button", { title: "Mute", onclick: () => actions.toggleSound() }, svg(ICONS.speakerOn, 14));
@@ -93,7 +97,7 @@ export function buildHeader(actions: ViewActions): ViewHost {
   const el = h(
     "div",
     { id: "header" },
-    h("div", { class: "tabs" }, tabHome, tabChat, tabDrop),
+    h("div", { class: "tabs" }, tabHome, tabChat, tabDrop, tabUsage),
     h("div", { class: "header-actions" }, gearBtn, soundBtn),
   );
 
@@ -104,6 +108,8 @@ export function buildHeader(actions: ViewActions): ViewHost {
       tabHome.classList.toggle("on", v === "overview" || v === "empty");
       tabChat.classList.toggle("on", v === "prompt");
       tabDrop.classList.toggle("on", v === "upload");
+      tabUsage.classList.toggle("on", v === "usage");
+      tabUsage.setAttribute("aria-pressed", String(v === "usage"));
       gearBtn.classList.toggle("on", v === "settings");
       clear(gearBtn);
       gearBtn.append(svg(v === "settings" ? ICONS.gearFill : ICONS.gear, 14));
@@ -342,10 +348,12 @@ function buildError(actions: ViewActions): ViewHost {
   const who = h("div");
   const title = h("div", { class: "title", text: "Workflow stopped." });
   const detail = h("div", { class: "detail" });
+  const open = btn("", "secondary", () => {
+    if (State.focusTask?.source === "n8n") void Bridge.openN8n();
+    else actions.openTerminal();
+  });
   const row = h("div", { class: "actions" },
-    btn("Retry", "primary", () => actions.setView(State.defaultView())),
-    btn("Open in n8n", "secondary", () => actions.openUrl("")),
-  );
+    btn("Volver", "primary", () => actions.setView(State.defaultView())), open);
   const el = h("div", { class: "view" }, card("red", stack(116, 16, who, title, detail, row)));
   return {
     el,
@@ -355,6 +363,7 @@ function buildError(actions: ViewActions): ViewHost {
       who.append(agentWho(task, task?.source === "n8n" ? "n8n" : "Codex"));
       title.textContent = task?.source === "n8n" ? "Workflow stopped." : "Session stopped on an error.";
       detail.textContent = task?.steps.at(-1) ?? "No detail available.";
+      open.firstElementChild!.textContent = task?.source === "n8n" ? "Abrir n8n" : "Abrir terminal";
     },
   };
 }
@@ -393,13 +402,30 @@ function buildConfused(): ViewHost {
 
 // ── Note ──────────────────────────────────────────────────────────────────────
 
-function buildNote(): ViewHost {
+function buildNote(actions: ViewActions): ViewHost {
   const title = h("div", { class: "title" });
-  const el = h("div", { class: "view" }, card(null, h("div", { class: "stack", style: "padding:0 18px 0 98px" }, title)));
+  const detail = h("div", { class: "sub note-detail" });
+  const primary = btn("", "primary", () => {
+    const notice = State.noteChat;
+    if (notice?.action === "usage") actions.openUrl(MANAGE_USAGE_URL);
+    else if (notice?.action === "settings") actions.openSettingsWindow();
+    else actions.setView("prompt");
+  });
+  const back = btn("Volver al mensaje", "secondary", () => actions.setView("prompt"));
+  const buttons = h("div", { class: "actions" }, primary, back,
+    btn("Consumo", "secondary", () => actions.setView("usage")));
+  const el = h("div", { class: "view note-view" }, card(null, h("div", { class: "stack note-stack", style: "padding:14px 18px 14px 98px" }, title, detail, buttons)));
   return {
     el,
+    focus() { if (State.noteChat?.title === State.noteMessage) (primary.hidden ? back : primary).focus(); },
     sync() {
       title.textContent = State.noteMessage ?? "";
+      const notice = State.noteChat?.title === State.noteMessage ? State.noteChat : null;
+      detail.textContent = notice?.detail ?? "";
+      detail.hidden = !notice;
+      buttons.hidden = !notice;
+      primary.hidden = notice?.action === "chat";
+      primary.firstElementChild!.textContent = notice?.action === "usage" ? "Gestionar uso ↗" : "Abrir Ajustes";
     },
   };
 }
@@ -494,7 +520,8 @@ export function buildViews(
   map.set("error", buildError(actions));
   map.set("finished", buildFinished(actions));
   map.set("confused", buildConfused());
-  map.set("note", buildNote());
+  map.set("note", buildNote(actions));
+  map.set("usage", buildUsage(actions));
   map.set("settings", buildSettings(actions));
   map.set("prompt", buildPrompt(onChatHeightChange));
   map.set("upload", buildUpload());

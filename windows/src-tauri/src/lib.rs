@@ -11,6 +11,7 @@ mod pipe;
 mod secrets;
 mod settings;
 mod tray;
+mod usage;
 mod win_user;
 
 use std::os::windows::process::CommandExt;
@@ -74,6 +75,19 @@ fn boot(app: AppHandle, shared: State<Shared>) -> BootInfo {
         version: env!("CARGO_PKG_VERSION").to_string(),
         hook_path: settings::hook_exe_path().to_string_lossy().to_string(),
     }
+}
+
+#[tauri::command]
+async fn usage_read(
+    shared: State<'_, Shared>,
+    cache: State<'_, Arc<usage::UsageCache>>,
+    refresh: bool,
+) -> Result<usage::UsageSnapshot, String> {
+    let path = shared.settings.lock().unwrap().codex_path.clone();
+    let cache = cache.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || cache.read(&path, refresh))
+        .await
+        .map_err(|_| "Could not read Codex usage.".into())
 }
 
 #[tauri::command]
@@ -577,9 +591,11 @@ pub fn run() {
         })
         .manage(Pending::default())
         .manage(Chat::default())
+        .manage(Arc::new(usage::UsageCache::default()))
         .manage(Subscription(chatgpt_client::Manager::new().map(Arc::new)))
         .invoke_handler(tauri::generate_handler![
             boot,
+            usage_read,
             save_settings,
             set_collapsed,
             set_island_rect,

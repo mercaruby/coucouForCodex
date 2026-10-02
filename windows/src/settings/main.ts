@@ -6,6 +6,7 @@ import "./settings.css";
 import { Bridge, onEvent, type HookStatus, type ChatGPTSession, type ChatGPTModel } from "../core/bridge";
 import { DEFAULT_SETTINGS, type Settings } from "../core/state";
 import { h, clear } from "../views/dom";
+import { MANAGE_USAGE_URL } from "../core/chat-notice";
 
 let settings: Settings = { ...DEFAULT_SETTINGS };
 let version = "";
@@ -195,6 +196,30 @@ function codexSection(status: HookStatus): HTMLElement {
 }
 
 // ── Chat backend ──────────────────────────────────────────────────────────────
+
+function usageSection(): HTMLElement {
+  const path = h("input", { type: "text", value: settings.codexPath, placeholder: "Automático · cliente oficial instalado", "aria-label": "Ruta del cliente oficial codex.exe" });
+  const feedback = h("div", { class: "hint" });
+  const apply = h("button", { text: "Guardar ruta", onclick: async () => {
+    const next = path.value.trim();
+    if (next && !/^(?:[A-Za-z]:\\|\\\\).+\\codex\.exe$/i.test(next)) {
+      feedback.textContent = "Indica una ruta absoluta a codex.exe, sin comillas ni argumentos.";
+      return;
+    }
+    const before = settings.codexPath;
+    settings.codexPath = next;
+    apply.disabled = true;
+    const saved = await save();
+    if (!saved) settings.codexPath = before;
+    apply.disabled = false;
+    feedback.textContent = saved ? "Ruta guardada. Abre Consumo para actualizar la lectura." : "No se pudo guardar la ruta.";
+  } });
+  return h("section", {}, h("h2", { text: "Consumo de plataformas" }),
+    h("div", { class: "hint", text: "Codex publica sus porcentajes a través de su cliente oficial. Inicia sesión allí con ChatGPT. Coucou consulta los límites sin enviar mensajes y conserva la última lectura si falla la actualización." }),
+    h("div", { class: "row" }, h("label", { text: "Cliente Codex" }), path, apply),
+    h("div", { class: "hint", text: "Opcional: elige únicamente el codex.exe oficial. La conexión de ChatGPT de Coucou se gestiona por separado; OpenAI no publica su porcentaje mediante esta conexión." }),
+    h("button", { text: "Gestionar uso de ChatGPT ↗", onclick: () => void Bridge.openUrl(MANAGE_USAGE_URL) }), feedback);
+}
 
 const MODELS: [string, string][] = [
   ["", "Default server model"],
@@ -648,6 +673,7 @@ async function main() {
     h("h1", {}, h("span", { text: "Coucou" }), h("span", { class: "version", text: version })),
     codexSection(status),
     chatgptChatSection(),
+    usageSection(),
     apiSection(hasKey),
     integrationsSection(present),
     generalSection(),

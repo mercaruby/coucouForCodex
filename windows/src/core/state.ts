@@ -2,6 +2,7 @@
 
 import type { BotEmoteName, BotStateName, IslandMode, IslandViewName } from "./layout";
 import type { EyeShape } from "../mochi/engine";
+import type { ChatNotice } from "./chat-notice";
 
 export type AgentSource = "codex" | "n8n";
 export type PillBadge = "approval" | "finished" | "error";
@@ -138,6 +139,7 @@ class AppState {
   promptContext: PromptContext | null = null;
   droppedFile: { name: string; path: string } | null = null;
   noteMessage: string | null = null;
+  noteChat: ChatNotice | null = null;
   searchResult: SearchResult | null = null;
   chatHistory: ChatMessage[] = [];
   /** Discards replies that arrive after a chat reset or backend change. */
@@ -167,6 +169,7 @@ class AppState {
     this.chatHistory = [];
     this.stateOverride = null;
     this.noteMessage = null;
+    this.noteChat = null;
     this.notify();
   }
 

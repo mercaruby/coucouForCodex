@@ -16,6 +16,8 @@ The optional **OpenAI API** backend is a separate explicit choice with its own k
 
 ## Codex monitoring and approvals
 
+The expanded Windows menu also has **Consumo**, inspired by [CodeNotch](https://github.com/vinzdg/codenotch): consumed percentages, reported windows, reset dates and an explicit stale-data state. It reads the official native Codex client without inference or credential imports. Coucou's separate ChatGPT connection shows status and **Gestionar uso**; its public OAuth contract does not publish a numeric usage getter. See [setup and limits](docs/USAGE.md) and [validation](docs/VALIDATION-USAGE.md). Quota errors preserve the typed message and provide recovery actions.
+
 Lifecycle hooks use $CODEX_HOME/hooks.json (default ~/.codex/hooks.json), a separate per-user pipe, and explicit Allow/Deny buttons for recognised shell requests whose arguments can be displayed completely. Unknown, oversized or ambiguous requests stay in the official terminal. The island shows the latest session in an aggregated card.
 
 Inspect the installation diff in Settings before applying it. Installation backs up existing files, refuses corrupt settings and stale previews, and preserves other handlers in mixed groups. Then review and trust the exact definitions with /hooks in the official Codex CLI. Chat authentication and hook monitoring are independent; installing hooks does not import a login or grant permissions automatically.

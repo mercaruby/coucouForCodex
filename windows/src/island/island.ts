@@ -830,24 +830,26 @@ export class Island {
 
     this.contentEl.style.opacity = expanded && !greetingActive ? "1" : "0";
     this.contentEl.style.pointerEvents = expanded && !greetingActive ? "auto" : "none";
+    this.contentEl.inert = !expanded || greetingActive;
     this.greetingCanvas.style.display = greetingActive ? "block" : "none";
 
     this.header.sync();
     for (const [name, view] of this.views) {
       const on = name === State.view;
       view.el.classList.toggle("on", on);
+      view.el.inert = !on;
       if (on) view.sync();
     }
 
-    // The chat is the only view with a text field, so it is the only time the
-    // island is allowed to take keyboard focus.
+    // User-initiated chat, recovery actions and consumption support keyboard focus.
     if (this.lastSyncedView !== State.view) {
-      const wasChat = this.lastSyncedView === "prompt";
+      const hadFocus = this.lastSyncedView === "prompt" || this.lastSyncedView === "usage" || this.lastSyncedView === "note";
       this.lastSyncedView = State.view;
-      if (State.view === "prompt") {
+      if (State.view === "prompt" || State.view === "usage" || (State.view === "note" && State.noteChat?.title === State.noteMessage)) {
         void Bridge.focusWindow(true);
-        window.setTimeout(() => this.views.get("prompt")?.focus?.(), 120);
-      } else if (wasChat) {
+        const view = State.view;
+        window.setTimeout(() => { if (State.view === view) this.views.get(view)?.focus?.(); }, 120);
+      } else if (hadFocus) {
         void Bridge.focusWindow(false);
       }
     }

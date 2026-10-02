@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Coucou · pruebas de consumo</title>
+  <link rel="stylesheet" href="/src/style.css">
+  <style>
+    html, body { height: auto; overflow: auto; background: #252830; }
+    body { padding: 24px; color: #f5f6f8; }
+    #fixture-controls { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+    #fixture-controls button { padding: 8px 12px; background: #363a45; border-radius: 8px; }
+    #fixture-stage { position: relative; width: 640px; height: 310px; background: #090a0c; border-radius: 22px; }
+    #fixture-stage .view { transition: none; transform: none; }
+    #fixture-report { max-width: 720px; white-space: pre-wrap; font: 12px/1.4 monospace; padding-top: 16px; }
+  </style>
+</head>
+<body>
+  <div id="fixture-controls">
+    <button id="width-640">640 px</button><button id="width-320">320 px</button>
+    <button id="case-usage">Datos de prueba</button><button id="case-empty">Sin datos</button>
+    <button id="case-stale">Datos anteriores</button><button id="case-chat">Probar cuota</button>
+  </div>
+  <main id="fixture-stage"><div id="content"><div id="fixture-header"></div><div id="views"></div></div></main>
+  <pre id="fixture-report" aria-live="polite">Inicializando pruebas…</pre>
+  <script type="module">
+    // Development/test page only, excluded from Vite's production entrypoints.
+    // Actual view modules run with synthetic state and inert OS/network bridges.
+    import { Bridge } from "/src/core/bridge.ts";
+    import { State } from "/src/core/state.ts";
+    import { Usage } from "/src/core/usage.ts";
+    import { chatNotice, MANAGE_USAGE_URL } from "/src/core/chat-notice.ts";
+    import { buildViews, buildHeader } from "/src/views/views.ts";
+    const report = document.querySelector("#fixture-report");
+    const stage = document.querySelector("#fixture-stage");
+    const state = { actions: [], assertions: [], width: 640, active: "usage" };
+    window.fixtureResult = state;
+    function assert(name, condition) {
+      state.assertions.push({ name, pass: !!condition });
+      report.textContent = JSON.stringify(state, null, 2);
+      if (!condition) throw new Error(`Fixture assertion failed: ${name}`);
+    }
+    Bridge.openUrl = async (url) => { state.actions.push({ action: "openUrl", url }); report.textContent = JSON.stringify(state, null, 2); };
+    Bridge.focusWindow = async () => null; Bridge.log = async () => null;
+    Bridge.chatSend = async () => { throw new Error("OpenAI reported a ChatGPT sharing limit for this app or account. synthetic-secret-marker"); };
+    State.mode = "expanded"; State.paused = false; State.settings.soundEnabled = false;
+    State.settings.chatBackend = "chatgpt";
+    Usage.checkedAt = Date.now();
+    Usage.session = { connected: true, sharing: true, generation: 1 };
+    Usage.sessionUnavailable = false;
+    const actions = {
+      setView(view) { State.view = view; render(); }, collapse() {}, setFocus() {}, openTerminal() {},
+      openTarget() {}, openUrl: (url) => void Bridge.openUrl(url), decide() {}, toggleSound() {},
+      setVolume() {}, setAutoClose() {}, openSettingsWindow() { state.actions.push({ action: "settings" }); }, blip() {},
+    };
+    const header = buildHeader(actions);
+    document.querySelector("#fixture-header").replaceWith(header.el);
+    const views = buildViews(actions, () => render());
+    for (const host of views.values()) document.querySelector("#views").append(host.el);
+    function render() {
+      state.active = State.view;
+      stage.style.width = `${state.width}px`;
+      stage.style.height = `${State.view === "usage" ? 310 : State.view === "note" ? 220 : 240}px`;
+      header.sync();
+      for (const [view, host] of views) { host.el.classList.toggle("on", view === State.view); host.el.inert = view !== State.view; }
+      views.get(State.view)?.sync();
+      stage.dataset.historyCount = String(State.chatHistory.length);
+      stage.dataset.droppedFilename = State.droppedFile?.name ?? "";
+      report.textContent = JSON.stringify(state, null, 2);
+    }
+    State.subscribe(render);
+    function usageCase(kind = "available") {
+      Usage.snapshot = { status: kind, source: "codex-app-server", fetchedAt: kind === "unavailable" ? null : 1790812800,
+        error: kind === "available" ? null : "No se pudo consultar Codex.", buckets: kind === "unavailable" ? [] : [
+          { id: "codex", name: "Codex", planType: "plus", windows: [
+            { id: "primary", usedPercent: 0, windowDurationMins: 300, resetsAt: 1790971869 },
+            { id: "secondary", usedPercent: 87, windowDurationMins: 10080, resetsAt: 1791199048 }] },
+          { id: "code-review", name: "Code review", planType: null, windows: [
+            { id: "primary", usedPercent: null, windowDurationMins: null, resetsAt: null },
+            { id: "secondary", usedPercent: null, windowDurationMins: null, resetsAt: null }] }
+        ] };
+      Usage.revision++; State.view = "usage"; render();
+    }
+    document.querySelector("#width-640").onclick = () => { state.width = 640; render(); };
+    document.querySelector("#width-320").onclick = () => { state.width = 320; render(); };
+    document.querySelector("#case-usage").onclick = () => usageCase();
+    document.querySelector("#case-empty").onclick = () => usageCase("unavailable");
+    document.querySelector("#case-stale").onclick = () => usageCase("stale");
+    document.querySelector("#case-chat").onclick = () => {
+      State.resetChat();
+      State.droppedFile = { name: "fixture.txt", path: "C:/synthetic-fixture/not-read.txt" };
+      State.view = "prompt"; render();
+    };
+    usageCase();
+    const generic = chatNotice("ChatGPT did not complete this response. Try again or check your account's usage limits.", "chatgpt");
+    assert("Generic failure mentioning usage limits is not a quota signal", generic.kind === "other");
+    assert("429 is temporary, not a definitive sharing limit", chatNotice("OpenAI reported a usage or rate limit for this request.", "chatgpt").kind === "temporary");
+    const malicious = chatNotice("synthetic-secret-marker private transport data", "chatgpt");
+    assert("Untrusted error body is not reflected", !JSON.stringify(malicious).includes("synthetic-secret-marker"));
+    assert("Unknown percentages never claim zero", views.get("usage").el.textContent.includes("Sin dato"));
+    assert("Only known windows expose numeric progressbar metadata", views.get("usage").el.querySelectorAll('[role="progressbar"]').length === 2);
+    assert("Manage usage action is the official fixed page", MANAGE_USAGE_URL === "https://chatgpt.com/settings/usage");
+    window.fixtureCheck = () => {
+      const host = views.get(State.view).el;
+      const card = host.querySelector(".card");
+      return { width: state.width, active: State.view, cardWidth: card.clientWidth, cardHeight: card.clientHeight,
+        cardScrollWidth: card.scrollWidth, cardScrollHeight: card.scrollHeight,
+        buttons: [...host.querySelectorAll("button")].filter(button => !button.hidden).map(button => ({text:button.textContent, rect:button.getBoundingClientRect().toJSON()})),
+        input: views.get("prompt").el.querySelector("input").value, historyCount: State.chatHistory.length,
+        notice: State.noteChat, limitReported: Usage.limitReported,
+        visibleText: host.textContent, actions: state.actions, assertions: state.assertions };
+    };
+  </script>
+</body>
+</html>

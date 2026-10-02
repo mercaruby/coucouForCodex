@@ -1,6 +1,6 @@
 # Seguridad del inicio de sesión con ChatGPT
 
-Fecha: 1 de octubre de 2026. Auditoría de arquitectura, código y condiciones de aceptación. Este documento distingue mecanismos comprobados, implementación pendiente y prueba real con una cuenta elegible. La auditoría no lee sesiones de otras aplicaciones, `auth.json`, cookies ni tokens personales. El runtime OAuth propio utiliza y protege las credenciales entregadas por OpenAI tras consentimiento oficial.
+Fecha: auditoría OAuth del 1 de octubre de 2026; revisión adicional del consumo del 2 de octubre. Este documento distingue mecanismos comprobados, implementación pendiente y prueba real con una cuenta elegible. La auditoría no lee sesiones de otras aplicaciones, `auth.json`, cookies ni tokens personales. El runtime OAuth propio utiliza y protege las credenciales entregadas por OpenAI tras consentimiento oficial.
 
 ## Decisión de arquitectura
 
@@ -91,6 +91,26 @@ El PM también comunicó frontend final aprobado y **73 pruebas de workspace pas
 7. Build nativo y arranque de WebView. Después, con autorización y una cuenta elegible, login oficial y una inferencia mínima completada. Sin esa última prueba se describe como integración implementada y probada con fixtures, no como uso real del plan confirmado.
 
 No se utilizarán credenciales reales para las pruebas negativas. Los endpoints ficticios sólo pueden existir en el código de pruebas; la build de producción no debe ofrecer un override secreto que permita enviar un bearer a otro servidor.
+
+## Consulta independiente del consumo de Codex
+
+`windows/src-tauri/src/usage.rs` consulta metadatos de la sesión propia de la CLI oficial de Codex; este consumo se etiqueta como **Codex**, separado de los límites de uso de esta aplicación mediante SIWC. Una cuota comunicada por Responses no se convierte en un porcentaje global inventado. Las cuentas activas de Codex y SIWC pueden ser distintas; el lector no obtiene identidad para vincularlas y no supone que coincidan.
+
+El mensaje `subscription_sharing_usage_limit_exceeded` indica un límite comunicado por OpenAI para la aplicación o cuenta. `subscription_sharing_usage_unavailable` indica que no se pudo comprobar uso y recomienda reintentar conservando la conexión. HTTP 429 informa de un límite de uso o frecuencia de esa petición. Ninguno de estos errores revela el cuerpo privado, recomienda extraer tokens ni inicia otro OAuth automáticamente. Se retiraron los sufijos técnicos HTTP/MIME del texto mostrado al usuario; siguen vigentes límites y validación SSE. Dos pruebas de estas propiedades pasaron con fixtures sintéticos.
+
+El ejecutable se resuelve por ruta absoluta canónica y cabecera PE con offset limitado. La autodetección se restringe a ubicaciones de instalación conocidas: la CLI extraída por la app Desktop bajo LOCALAPPDATA/OpenAI/Codex/bin (hasta 64 entradas de versión de 16 caracteres hexadecimales), paquetes npm de OpenAI y USERPROFILE/.codex/bin. La candidata de `.tools` sólo existe en debug y procede de una ruta fija de compilación, no del directorio actual. Una ruta explícita es una decisión de confianza del usuario: una cabecera PE no acredita autoría, firma o integridad de OpenAI. No se ejecutan wrappers Node, scripts, una búsqueda de PATH ni una shell para esta consulta.
+
+El hijo arranca oculto, desde el directorio de Windows obtenido por API, con entorno vaciado y lista OS/CODEX_HOME. No hereda claves API, proxies ni overrides de Node/proveedor por variables. Se fija `model_provider="openai"`, se elimina el override ordinario de `openai_base_url` y se fija `chatgpt_base_url` oficial. Se conservan la autenticación y políticas administradas de la CLI: Codex puede usar o renovar internamente su sesión propia, pero la adaptación no lee/copia `auth.json`, cookies, tokens ni historial de Codex y no los entrega a la WebView. No hay implementación de HTTP privado en el lector.
+
+La secuencia RPC es exclusivamente initialize → initialized → account/rateLimits/read, con `excludeResetCreditDetails:true` y sin activar Luna Reserve. No se envían thread/start, turn/start, ejecución de comandos, aprobaciones, lecturas de historial ni solicitudes de herramientas. Una petición iniciada por el servidor se rechaza. El servidor oficial contiene más capacidades, pero el lector no ofrece un proxy genérico hacia ellas.
+
+Se revisó en el código oficial 0.159.2 que el arranque del app-server también refresca el catálogo de modelos en segundo plano. Por eso se aíslan cwd, entorno y destinos ordinarios; no debe describirse esta ejecución como ausencia absoluta de toda actividad de red aparte del RPC. Se confía en el binario oficial y las políticas administradas del equipo dentro del modelo de amenaza.
+
+El lector limita toda la transacción a 20 segundos, cada línea a 256 KiB, salida a 2 MiB y mensajes a 64. Consulta bytes disponibles mediante PeekNamedPipe antes de leer, evita un thread de lectura bloqueado y ejecuta kill/wait al liberar su hijo. Las escrituras RPC son constantes pequeñas. No se imprime stderr ni se reflejan errores o mensajes del protocolo en UI. Sólo se proyectan buckets/ventanas con métricas válidas y etiquetas acotadas; campos desconocidos, identidad y credenciales no se serializan.
+
+La caché serializa consultas, conserva resultados durante 60 segundos y aplica mínimo de 15 segundos al refresco explícito. Tras error, un resultado previo se marca stale y conserva su fecha; cambiar ruta de CLI descarta el snapshot anterior. Los valores nulos o inválidos siguen desconocidos y un mapa de buckets explícitamente vacío no se reemplaza por datos legacy.
+
+**Aceptación de esta ampliación:** el integrador/validador comunicó 18 pruebas del lector pasando, incluidos timeout, flood, error privado, límites/valores nulos, PE y caché. La prueba real explícita, ignorada en la suite rutinaria, pasó en 0,76 segundos y devolvió únicamente el DTO público de uso de Codex: 11% y 45% consumido en sus ventanas en ese momento. No inició otro login, OAuth, conversación ni inferencia. Este resultado no mide la cuota SIWC de Coucou ni el porcentaje global del plan, y puede cambiar después de la consulta. La auditoría acepta el lector dentro de las fronteras descritas; compilación release y comprobación final de UI corresponden al PM.
 
 ## Recuperación de un almacén propio corrupto
 

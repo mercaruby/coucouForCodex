@@ -7,6 +7,8 @@ import { Bridge, type ChatContext } from "../core/bridge";
 import { Sound } from "../core/sound";
 import { State, type ChatMessage } from "../core/state";
 import type { ViewHost } from "./views";
+import { chatNotice, MANAGE_USAGE_URL } from "../core/chat-notice";
+import { Usage } from "../core/usage";
 
 let nextId = 1;
 
@@ -47,11 +49,14 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
   }) as HTMLInputElement;
   const send = h("button", { class: "send-btn", title: "Send" }, svg(ICONS.arrowUp, 11));
   const bar = h("div", { class: "chat-bar" }, input, send);
+  const planLabel = h("span");
+  const manage = h("button", { class: "link-btn", text: "Gestionar uso ↗", onclick: () => void Bridge.openUrl(MANAGE_USAGE_URL) });
+  const plan = h("div", { class: "chat-plan" }, planLabel, manage);
 
   const el = h(
     "div",
     { class: "view" },
-    h("div", { class: "card wash chat-card" }, h("div", { class: "chat-body" }, chipRow, log, bar)),
+    h("div", { class: "card wash chat-card" }, h("div", { class: "chat-body" }, chipRow, log, bar, plan)),
   );
   (el.querySelector(".card") as HTMLElement).style.setProperty("--wash", "rgba(99,102,241,0.5)");
 
@@ -80,6 +85,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
       const reply = await Bridge.chatSend(query, context);
       if (epoch !== State.chatEpoch) return;
       State.chatHistory.push({ id: nextId++, role: "assistant", content: reply.text });
+      if (State.settings.chatBackend === "chatgpt") Usage.reportLimit(false);
       State.stateOverride = null;
       Sound.play("finish");
     } catch (err) {
@@ -87,14 +93,17 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
       State.chatHistory = State.chatHistory.filter((message) => message.id !== submittedId);
       input.value = query;
       State.stateOverride = null;
-      State.noteMessage = String(err).replace(/^Error:\s*/, "");
+      const notice = chatNotice(err, State.settings.chatBackend);
+      State.noteChat = notice;
+      State.noteMessage = notice.title;
+      if (notice.kind === "limit") Usage.reportLimit(true);
       State.view = "note";
       Sound.play("error");
     } finally {
       sending = false;
       State.notify();
       onHeightChange();
-      input.focus();
+      if (State.view === "prompt") input.focus();
     }
   }
 
@@ -130,6 +139,9 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
 
       input.placeholder = State.chatHistory.length === 0 ? "Ask me anything…" : "Continue…";
       input.disabled = sending;
+      send.disabled = sending;
+      planLabel.textContent = State.settings.chatBackend === "chatgpt" ? "Usando tu plan de ChatGPT" : "OpenAI API · facturación independiente";
+      manage.hidden = State.settings.chatBackend !== "chatgpt";
     },
     focus() {
       input.focus();

@@ -30,17 +30,13 @@ pub(crate) fn request(
     if !response.status().is_success() {
         return Err(http_error(response.status().as_u16()));
     }
-    let status = response.status().as_u16();
     let format = content_type(response.headers());
     // SIWC may omit Content-Type on a valid event stream. Validation remains
     // bounded and requires the completed event; explicit other types fail.
     if !matches!(format, "text/event-stream" | "none") {
-        return Err(format!(
-            "ChatGPT returned an unexpected response format (HTTP {status}; format: {format})."
-        ));
+        return Err("ChatGPT returned an unexpected response format.".into());
     }
     parse_sse(BufReader::new(response))
-        .map_err(|error| format!("{error} (HTTP {status}; format: {format})."))
 }
 
 fn content_type(headers: &reqwest::header::HeaderMap) -> &'static str {
@@ -65,7 +61,7 @@ fn content_type(headers: &reqwest::header::HeaderMap) -> &'static str {
 pub(crate) fn http_error(status: u16) -> String {
     match status {
         401|403 => "ChatGPT authorization was rejected. Reconnect and allow ChatGPT plan usage.",
-        429 => "Your ChatGPT plan or this app's usage allowance has reached a limit. Manage usage in ChatGPT.",
+        429 => "OpenAI reported a usage or rate limit for this request. Check account and app limits in ChatGPT Settings, or try again later.",
         400|404 => "This model or message is not supported by your connected ChatGPT account.",
         _ => "ChatGPT could not complete the request. Check OpenAI service status and try again.",
     }.into()
@@ -78,8 +74,8 @@ fn failure(value: &Value) -> String {
         .or_else(|| value["code"].as_str())
         .unwrap_or("");
     match code {
-        "subscription_sharing_usage_limit_exceeded" => "This app's ChatGPT plan usage limit has been reached. Manage usage in ChatGPT.",
-        "subscription_sharing_usage_unavailable" => "ChatGPT plan usage is unavailable for this connection. Manage usage or reconnect in ChatGPT.",
+        "subscription_sharing_usage_limit_exceeded" => "OpenAI reported a ChatGPT sharing limit for this app or account. Check usage and app limits in ChatGPT Settings.",
+        "subscription_sharing_usage_unavailable" => "ChatGPT usage could not be checked right now. Try again shortly and keep your current connection.",
         "chatpass_v2_scope_not_authorized" => "Your connection does not allow ChatGPT plan usage. Reconnect and review the requested permission.",
         _ => "ChatGPT did not complete this response. Try again or check your account's usage limits.",
     }.into()
@@ -208,3 +204,35 @@ pub(crate) fn parse_sse(mut reader: impl BufRead) -> Result<String, String> {
 #[cfg(test)]
 #[path = "responses_adversarial.rs"]
 mod independent_tests;
+
+#[cfg(test)]
+mod quota_tests {
+    use super::*;
+
+    #[test]
+    fn sharing_limit_is_a_provider_signal_without_an_invented_percentage() {
+        let message = failure(&json!({"response":{"error":{
+            "code":"subscription_sharing_usage_limit_exceeded",
+            "message":"synthetic-private-provider-detail"
+        }}}));
+        assert!(message.contains("OpenAI reported"));
+        assert!(message.contains("app or account"));
+        assert!(!message.contains('%'));
+        assert!(!message.contains("synthetic-private-provider-detail"));
+        let rate_limit = http_error(429);
+        assert!(rate_limit.contains("usage or rate limit"));
+        assert!(!rate_limit.contains("plan has"));
+    }
+
+    #[test]
+    fn unavailable_usage_is_retryable_without_reauthorization_or_private_detail() {
+        let message = failure(&json!({"error":{
+            "code":"subscription_sharing_usage_unavailable",
+            "detail":"synthetic-private-provider-detail"
+        }}));
+        assert!(message.contains("Try again shortly"));
+        assert!(message.contains("keep your current connection"));
+        assert!(!message.contains("reconnect"));
+        assert!(!message.contains("synthetic-private-provider-detail"));
+    }
+}
